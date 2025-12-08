@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Glue - Database, Crawler, ETL Job, Lake Formation
+
+Parameters:
+  ProjectName:
+    Type: String
+  RawDataBucket:
+    Type: String
+  ProcessedDataBucket:
+    Type: String
+  GlueScriptsBucket:
+    Type: String
+  GlueJobRoleArn:
+    Type: String
+  DatabaseSecretArn:
+    Type: String
+    Default: ""
+    Description: Database credentials secret ARN
+  VpcId:
+    Type: String
+    Default: ""
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+  SubnetAzs:
+    Type: CommaDelimitedList
+    Default: ""
+  GlueSecurityGroupId:
+    Type: String
+    Default: ""
+
+Conditions:
+  UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
+  HasDatabaseSecret: !Not [!Equals [!Ref DatabaseSecretArn, ""]]
+
+Resources:
+  # Glue database for recommendation data
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_db'
+        Description: Database for music recommendation data
+
+  # VPC connection for Glue jobs
+  GlueVpcConnection:
+    Type: AWS::Glue::Connection
+    Condition: UseVpcConfig
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      ConnectionInput:
+        Name: !Sub '${ProjectName}-glue-vpc-connection'
+        ConnectionType: NETWORK
+        PhysicalConnectionRequirements:
+          AvailabilityZone: !Select [0, !Ref SubnetAzs]
+          SubnetId: !Select [0, !Ref SubnetIds]
+          SecurityGroupIdList:
+          - !Ref GlueSecurityGroupId
+
+  # Crawler for Last.fm data
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    DependsOn: GlueDatabase
+    Properties:
+      Name: !Sub '${ProjectName}-lastfm-crawler'
+      Role: !Ref GlueJobRoleArn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+        - Path: !Sub 's3://${RawDataBucket}/lastfm/raw/chunks/'
+        - Path: !Sub 's3://${RawDataBucket}/lastfm/playlists/'
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  # ETL job for NeuMF data processing
+  GlueETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-neumf-etl'
+      Description: ETL job for NeuMF training data
+      Role: !Ref GlueJobRoleArn
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      Timeout: 120
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${GlueScriptsBucket}/scripts/glue_etl_neumf.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-bookmark-option': job-bookmark-enable
+        '--enable-metrics': 'true'
+        '--raw_data_bucket': !Ref RawDataBucket
+        '--processed_data_bucket': !Ref ProcessedDataBucket
+        '--database_name': !Ref GlueDatabase
+        '--database_secret_arn': !If
+        - HasDatabaseSecret
+        - !Ref DatabaseSecretArn
+        - ''
+      Connections:
+        Connections: !If
+        - UseVpcConfig
+        - - !Ref GlueVpcConnection
+        - []
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+
+  # ===============================
+  # Lake Formation Permissions
+  # ===============================
+
+  # Register raw data bucket
+  LakeFormationRawData:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Sub 'arn:aws:s3:::${RawDataBucket}'
+      UseServiceLinkedRole: true
+
+  # Register processed data bucket
+  LakeFormationProcessedData:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
+      UseServiceLinkedRole: true
+
+  # Grant database permissions
+  LakeFormationDatabasePermission:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: GlueDatabase
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      Permissions:
+      - ALL
+      Resource:
+        DatabaseResource:
+          Name: !Ref GlueDatabase
+
+  # Grant table permissions
+  LakeFormationTablePermission:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: GlueDatabase
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      Permissions:
+      - ALL
+      Resource:
+        TableResource:
+          DatabaseName: !Ref GlueDatabase
+          TableWildcard: {}
+
+Outputs:
+  GlueDatabaseName:
+    Value: !Ref GlueDatabase
+    Export:
+      Name: !Sub '${ProjectName}-GlueDatabase'
+  GlueETLJobName:
+    Value: !Ref GlueETLJob
+    Export:
+      Name: !Sub '${ProjectName}-GlueETLJob'
+  GlueCrawlerName:
+    Value: !Ref GlueCrawler
+    Export:
+      Name: !Sub '${ProjectName}-GlueCrawler'

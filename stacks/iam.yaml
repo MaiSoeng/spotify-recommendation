@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM Roles with Secrets Manager Access
+
+Parameters:
+  ProjectName:
+    Type: String
+  RawDataBucketArn:
+    Type: String
+  ProcessedDataBucketArn:
+    Type: String
+  ModelArtifactsBucketArn:
+    Type: String
+  GlueScriptsBucketArn:
+    Type: String
+  UserFeaturesTableArn:
+    Type: String
+  RecommendationCacheTableArn:
+    Type: String
+  TrackMetadataTableArn:
+    Type: String
+  UserEventsStreamArn:
+    Type: String
+  SecretsKMSKeyArn:
+    Type: String
+    Default: ""
+    Description: KMS key ARN for secrets
+
+Conditions:
+  HasSecrets: !Not [!Equals [!Ref SecretsKMSKeyArn, ""]]
+
+Resources:
+  # Firehose delivery role
+  FirehoseDeliveryRole:
+    Type: AWS::IAM::Role
+    Description: Role for Firehose delivery stream
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - firehose.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: FirehoseDeliveryPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:ListBucket
+            Resource:
+            - !Ref ProcessedDataBucketArn
+            - !Sub '${ProcessedDataBucketArn}/*'
+          - Effect: Allow
+            Action:
+            - logs:PutLogEvents
+            - logs:CreateLogStream
+            Resource: '*'
+
+  # Lambda execution role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Description: Role for Lambda functions
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+      - PolicyName: LambdaS3Access
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:ListBucket
+            Resource:
+            - !Ref RawDataBucketArn
+            - !Sub '${RawDataBucketArn}/*'
+            - !Ref ProcessedDataBucketArn
+            - !Sub '${ProcessedDataBucketArn}/*'
+      - PolicyName: LambdaDynamoDB
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:BatchGetItem
+            - dynamodb:BatchWriteItem
+            Resource:
+            - !Ref UserFeaturesTableArn
+            - !Ref RecommendationCacheTableArn
+            - !Ref TrackMetadataTableArn
+            - !Sub '${UserFeaturesTableArn}/index/*'
+      - PolicyName: LambdaKinesis
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - kinesis:PutRecord
+            - kinesis:PutRecords
+            - kinesis:GetRecords
+            - kinesis:GetShardIterator
+            - kinesis:DescribeStream
+            Resource: !Ref UserEventsStreamArn
+      - PolicyName: LambdaSageMaker
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - sagemaker:InvokeEndpoint
+            Resource: '*'
+      - PolicyName: LambdaLogs
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+      - PolicyName: LambdaSecrets
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:DescribeSecret
+            Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*'
+
+  # Glue job role
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Description: Role for Glue ETL jobs
+    Properties:
+      RoleName: !Sub '${ProjectName}-glue-role'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - glue.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+      - PolicyName: GlueS3Access
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:ListBucket
+            Resource:
+            - !Ref RawDataBucketArn
+            - !Sub '${RawDataBucketArn}/*'
+            - !Ref ProcessedDataBucketArn
+            - !Sub '${ProcessedDataBucketArn}/*'
+            - !Ref GlueScriptsBucketArn
+            - !Sub '${GlueScriptsBucketArn}/*'
+      - PolicyName: GlueLakeFormation
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - lakeformation:GetDataAccess
+            - lakeformation:GrantPermissions
+            Resource: '*'
+      - PolicyName: GlueVpcAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - ec2:CreateNetworkInterface
+            - ec2:DeleteNetworkInterface
+            - ec2:DescribeNetworkInterfaces
+            - ec2:DescribeSecurityGroups
+            - ec2:DescribeSubnets
+            - ec2:DescribeVpcs
+            Resource: '*'
+      - PolicyName: GlueSecrets
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+            Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*'
+
+  # SageMaker execution role
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Description: Role for SageMaker training and inference
+    Properties:
+      RoleName: !Sub '${ProjectName}-sagemaker-role'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - sagemaker.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+      - PolicyName: SageMakerS3Access
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:ListBucket
+            Resource:
+            - !Ref ProcessedDataBucketArn
+            - !Sub '${ProcessedDataBucketArn}/*'
+            - !Ref ModelArtifactsBucketArn
+            - !Sub '${ModelArtifactsBucketArn}/*'
+
+Outputs:
+  FirehoseDeliveryRoleArn:
+    Value: !GetAtt FirehoseDeliveryRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-FirehoseRoleArn'
+  LambdaExecutionRoleArn:
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-LambdaRoleArn'
+  GlueJobRoleArn:
+    Value: !GetAtt GlueJobRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-GlueRoleArn'
+  SageMakerExecutionRoleArn:
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-SageMakerRoleArn'

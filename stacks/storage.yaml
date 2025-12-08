@@ -1,0 +1,323 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Storage - S3, DynamoDB, Kinesis, Secrets Manager
+
+Parameters:
+  ProjectName:
+    Type: String
+  Environment:
+    Type: String
+    Default: dev
+  DBUsername:
+    Type: String
+    Default: usermi
+    Description: Database master username
+  DBPassword:
+    NoEcho: true
+    Type: String
+    Default: ""
+    Description: Database password (auto-generated if empty)
+  ListenBrainzToken:
+    NoEcho: true
+    Type: String
+    Default: ""
+    Description: ListenBrainz API token
+
+Conditions:
+  GenerateDBPassword: !Equals [!Ref DBPassword, ""]
+
+Resources:
+  # KMS key for secrets encryption
+  SecretsKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'KMS key for ${ProjectName} secrets'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowRootAccess
+          Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          Action: 'kms:*'
+          Resource: '*'
+        - Sid: AllowSecretsManager
+          Effect: Allow
+          Principal:
+            Service: secretsmanager.amazonaws.com
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:GenerateDataKey*
+          Resource: '*'
+
+  SecretsKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectName}-secrets-key'
+      TargetKeyId: !Ref SecretsKMSKey
+
+  # Database credentials secret
+  DatabaseCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/database/credentials'
+      Description: Database credentials
+      KmsKeyId: !Ref SecretsKMSKey
+      GenerateSecretString: !If
+        - GenerateDBPassword
+        - SecretStringTemplate: !Sub '{"username": "${DBUsername}"}'
+          GenerateStringKey: password
+          PasswordLength: 32
+          ExcludeCharacters: '"@/\'
+        - !Ref AWS::NoValue
+      SecretString: !If
+        - GenerateDBPassword
+        - !Ref AWS::NoValue
+        - !Sub '{"username": "${DBUsername}", "password": "${DBPassword}"}'
+
+  # ListenBrainz API secret
+  ListenBrainzSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/api/listenbrainz'
+      Description: ListenBrainz API credentials
+      KmsKeyId: !Ref SecretsKMSKey
+      SecretString: !Sub '{"token": "${ListenBrainzToken}"}'
+
+  # External API keys
+  APIKeysSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/api/keys'
+      Description: External API keys
+      KmsKeyId: !Ref SecretsKMSKey
+      SecretString: '{"spotify_client_id": "", "spotify_client_secret": ""}'
+
+  # ===============================
+  # S3 Buckets
+  # ===============================
+
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-raw-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+            KMSMasterKeyID: !GetAtt SecretsKMSKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+        - Id: TransitionToIA
+          Status: Enabled
+          Transitions:
+          - StorageClass: STANDARD_IA
+            TransitionInDays: 30
+
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-processed-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+            KMSMasterKeyID: !GetAtt SecretsKMSKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-model-artifacts-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+            KMSMasterKeyID: !GetAtt SecretsKMSKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  GlueScriptsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-glue-scripts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ===============================
+  # DynamoDB Tables
+  # ===============================
+
+  UserFeaturesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-user-features'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt SecretsKMSKey.Arn
+      AttributeDefinitions:
+      - AttributeName: user_id
+        AttributeType: S
+      - AttributeName: updated_at
+        AttributeType: S
+      KeySchema:
+      - AttributeName: user_id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: updated_at_index
+        KeySchema:
+        - AttributeName: updated_at
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  RecommendationCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-recommendation-cache'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt SecretsKMSKey.Arn
+      AttributeDefinitions:
+      - AttributeName: user_id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: user_id
+        KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  TrackMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-track-metadata'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !GetAtt SecretsKMSKey.Arn
+      AttributeDefinitions:
+      - AttributeName: track_id
+        AttributeType: S
+      - AttributeName: artist_name
+        AttributeType: S
+      KeySchema:
+      - AttributeName: track_id
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: artist_index
+        KeySchema:
+        - AttributeName: artist_name
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+
+  # ===============================
+  # Kinesis Stream
+  # ===============================
+
+  UserEventsStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${ProjectName}-user-events'
+      RetentionPeriodHours: 168
+      ShardCount: 2
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: !Ref SecretsKMSKey
+
+Outputs:
+  SecretsKMSKeyArn:
+    Value: !GetAtt SecretsKMSKey.Arn
+    Export:
+      Name: !Sub '${ProjectName}-SecretsKMSKeyArn'
+  DatabaseCredentialsSecretArn:
+    Value: !Ref DatabaseCredentialsSecret
+    Export:
+      Name: !Sub '${ProjectName}-DBSecretArn'
+  ListenBrainzSecretArn:
+    Value: !Ref ListenBrainzSecret
+    Export:
+      Name: !Sub '${ProjectName}-ListenBrainzSecretArn'
+  APIKeysSecretArn:
+    Value: !Ref APIKeysSecret
+    Export:
+      Name: !Sub '${ProjectName}-APIKeysSecretArn'
+  RawDataBucketArn:
+    Value: !GetAtt RawDataBucket.Arn
+    Export:
+      Name: !Sub '${ProjectName}-RawDataBucketArn'
+  RawDataBucketName:
+    Value: !Ref RawDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-RawDataBucket'
+  ProcessedDataBucketArn:
+    Value: !GetAtt ProcessedDataBucket.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ProcessedDataBucketArn'
+  ProcessedDataBucketName:
+    Value: !Ref ProcessedDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-ProcessedDataBucket'
+  ModelArtifactsBucketArn:
+    Value: !GetAtt ModelArtifactsBucket.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ModelArtifactsBucketArn'
+  GlueScriptsBucketArn:
+    Value: !GetAtt GlueScriptsBucket.Arn
+    Export:
+      Name: !Sub '${ProjectName}-GlueScriptsBucketArn'
+  GlueScriptsBucketName:
+    Value: !Ref GlueScriptsBucket
+    Export:
+      Name: !Sub '${ProjectName}-GlueScriptsBucket'
+  UserFeaturesTableArn:
+    Value: !GetAtt UserFeaturesTable.Arn
+    Export:
+      Name: !Sub '${ProjectName}-UserFeaturesTableArn'
+  RecommendationCacheTableArn:
+    Value: !GetAtt RecommendationCacheTable.Arn
+    Export:
+      Name: !Sub '${ProjectName}-RecommendationCacheTableArn'
+  TrackMetadataTableArn:
+    Value: !GetAtt TrackMetadataTable.Arn
+    Export:
+      Name: !Sub '${ProjectName}-TrackMetadataTableArn'
+  UserEventsStreamArn:
+    Value: !GetAtt UserEventsStream.Arn
+    Export:
+      Name: !Sub '${ProjectName}-UserEventsStreamArn'

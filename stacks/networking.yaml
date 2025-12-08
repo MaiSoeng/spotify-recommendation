@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Networking - VPC Endpoints, Security Groups
+
+Parameters:
+  ProjectName:
+    Type: String
+  VpcId:
+    Type: String
+    Default: ""
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+  SubnetAzs:
+    Type: CommaDelimitedList
+    Default: ""
+  RouteTableIds:
+    Type: CommaDelimitedList
+    Default: ""
+
+Conditions:
+  HasVpc: !Not [!Equals [!Ref VpcId, ""]]
+  HasSubnets: !Not [!Equals [!Join ["", !Ref SubnetIds], ""]]
+  UseVpcConfig: !And [!Condition HasVpc, !Condition HasSubnets]
+
+Resources:
+  # Security group for Lambda functions
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpcConfig
+    Properties:
+      GroupName: !Sub '${ProjectName}-lambda-sg'
+      GroupDescription: Security group for Lambda functions
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+
+  # Security group for Glue ETL jobs
+  GlueSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpcConfig
+    Properties:
+      GroupName: !Sub '${ProjectName}-glue-sg'
+      GroupDescription: Security group for Glue ETL jobs
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        SourceSecurityGroupId: !Ref GlueSecurityGroup
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        DestinationSecurityGroupId: !Ref GlueSecurityGroup
+
+  # ===============================
+  # VPC Endpoints
+  # ===============================
+
+  # Gateway endpoint for S3
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+
+  # Gateway endpoint for DynamoDB
+  DynamoDBVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+
+  # Interface endpoint for Glue
+  GlueVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.glue'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref GlueSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Interface endpoint for SageMaker API
+  SageMakerApiVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.api'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Interface endpoint for SageMaker Runtime
+  SageMakerRuntimeVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.runtime'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Interface endpoint for Kinesis
+  KinesisVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.kinesis-streams'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+Outputs:
+  LambdaSecurityGroupId:
+    Condition: UseVpcConfig
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-LambdaSG'
+  GlueSecurityGroupId:
+    Condition: UseVpcConfig
+    Value: !Ref GlueSecurityGroup
+    Export:
+      Name: !Sub '${ProjectName}-GlueSG'

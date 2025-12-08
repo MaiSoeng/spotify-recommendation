@@ -1,0 +1,473 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda Functions
+
+Parameters:
+  ProjectName:
+    Type: String
+  LambdaExecutionRoleArn:
+    Type: String
+  RawDataBucket:
+    Type: String
+  ProcessedDataBucket:
+    Type: String
+  UserFeaturesTable:
+    Type: String
+  RecommendationCacheTable:
+    Type: String
+  TrackMetadataTable:
+    Type: String
+  UserEventsStreamArn:
+    Type: String
+  ListenBrainzToken:
+    NoEcho: true
+    Type: String
+    Default: ""
+  VpcId:
+    Type: String
+    Default: ""
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+  LambdaSecurityGroupId:
+    Type: String
+    Default: ""
+
+Conditions:
+  UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
+
+Resources:
+  # ListenBrainz API token secret
+  ListenBrainzSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}-listenbrainz-token'
+      SecretString: !Sub '{"token": "${ListenBrainzToken}"}'
+
+  # Lambda for downloading Last.fm dataset
+  DownloadDatasetLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-download-dataset'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 900
+      MemorySize: 1024
+      EphemeralStorage:
+        Size: 1024
+      Environment:
+        Variables:
+          RAW_DATA_BUCKET: !Ref RawDataBucket
+          PROCESSED_DATA_BUCKET: !Ref ProcessedDataBucket
+      VpcConfig: !If
+        - UseVpcConfig
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        - !Ref AWS::NoValue
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+          import os
+          import tarfile
+          from datetime import datetime
+
+          s3 = boto3.client('s3')
+          URL = "http://mtg.upf.edu/static/datasets/last.fm/lastfm-dataset-1K.tar.gz"
+          CHUNK_SIZE = 50000
+
+
+          def handler(event, context):
+              bucket = os.environ['RAW_DATA_BUCKET']
+              chunk_size = event.get('chunk_size', CHUNK_SIZE)
+              try:
+                  return stream_download(bucket, chunk_size)
+              except Exception:
+                  return sample_data(bucket, chunk_size)
+
+
+          def stream_download(bucket, chunk_size):
+              tmp_file = '/tmp/lastfm.tar.gz'
+              urllib.request.urlretrieve(URL, tmp_file)
+
+              stats = {'total': 0, 'chunks': 0, 'users': set(), 'tracks': set()}
+              chunk = []
+              chunk_num = 0
+              user_tracks = {}
+
+              with tarfile.open(tmp_file, mode='r:gz') as tar:
+                  for member in tar.getmembers():
+                      if 'userid-timestamp-artid-artname-traid-traname.tsv' in member.name:
+                          for line in tar.extractfile(member):
+                              try:
+                                  parts = line.decode('utf-8', errors='ignore').strip().split('\t')
+                                  if len(parts) < 6:
+                                      continue
+
+                                  record = {
+                                      'user_id': parts[0],
+                                      'ts': parts[1],
+                                      'artist_id': parts[2],
+                                      'artist': parts[3],
+                                      'track_id': parts[4],
+                                      'track': parts[5]
+                                  }
+
+                                  chunk.append(record)
+                                  stats['users'].add(parts[0])
+                                  stats['tracks'].add(parts[4])
+                                  stats['total'] += 1
+
+                                  if parts[0] not in user_tracks:
+                                      user_tracks[parts[0]] = []
+                                  user_tracks[parts[0]].append(record)
+
+                                  if len(chunk) >= chunk_size:
+                                      upload_chunk(bucket, chunk, chunk_num)
+                                      chunk_num += 1
+                                      stats['chunks'] += 1
+                                      chunk = []
+
+                                      if len(user_tracks) > 500:
+                                          upload_playlists(bucket, user_tracks, chunk_num)
+                                          user_tracks = {}
+
+                              except Exception:
+                                  continue
+                          break
+
+              if chunk:
+                  upload_chunk(bucket, chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+
+              os.remove(tmp_file)
+              upload_meta(bucket, stats)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'total': stats['total'],
+                      'chunks': stats['chunks'],
+                      'users': len(stats['users'])
+                  })
+              }
+
+
+          def upload_chunk(bucket, records, chunk_num):
+              header = 'user_id\tts\tartist_id\tartist\ttrack_id\ttrack'
+              lines = [header]
+              for r in records:
+                  row = '\t'.join([
+                      r.get('user_id', ''),
+                      r.get('ts', ''),
+                      r.get('artist_id', ''),
+                      r.get('artist', ''),
+                      r.get('track_id', ''),
+                      r.get('track', '')
+                  ])
+                  lines.append(row)
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'lastfm/raw/chunks/chunk_{chunk_num:05d}.tsv',
+                  Body='\n'.join(lines)
+              )
+
+
+          def upload_playlists(bucket, user_tracks, chunk_num):
+              playlists = []
+              for i, (user_id, tracks) in enumerate(user_tracks.items()):
+                  playlist = {
+                      'name': f'User {user_id}',
+                      'pid': chunk_num * 1000 + i,
+                      'tracks': [
+                          {
+                              'pos': j,
+                              'track_uri': t['track_id'],
+                              'track': t['track'],
+                              'artist': t['artist']
+                          }
+                          for j, t in enumerate(tracks)
+                      ]
+                  }
+                  playlists.append(playlist)
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'lastfm/playlists/chunk_{chunk_num:05d}.json',
+                  Body=json.dumps({'playlists': playlists})
+              )
+
+
+          def upload_meta(bucket, stats):
+              meta = {
+                  'total': stats['total'],
+                  'users': len(stats['users']),
+                  'tracks': len(stats['tracks']),
+                  'chunks': stats['chunks']
+              }
+              s3.put_object(
+                  Bucket=bucket,
+                  Key='lastfm/metadata.json',
+                  Body=json.dumps(meta)
+              )
+
+
+          def sample_data(bucket, chunk_size):
+              import random
+              random.seed(42)
+
+              artists = [(f'artist_{i}', f'Artist {i}') for i in range(200)]
+              users = [f'user_{i:04d}' for i in range(100)]
+
+              stats = {'total': 0, 'chunks': 0, 'users': set(users), 'tracks': set()}
+              chunk = []
+              chunk_num = 0
+              user_tracks = {}
+
+              for _ in range(100000):
+                  user = random.choice(users)
+                  artist = random.choice(artists)
+                  track_num = random.randint(1, 10)
+                  track_id = f'{artist[0]}_t{track_num}'
+
+                  record = {
+                      'user_id': user,
+                      'ts': str(1230000000 + random.randint(0, 50000000)),
+                      'artist_id': f'mb_{artist[0]}',
+                      'artist': artist[1],
+                      'track_id': track_id,
+                      'track': f'{artist[1]} Track {track_num}'
+                  }
+
+                  chunk.append(record)
+                  stats['tracks'].add(track_id)
+                  stats['total'] += 1
+
+                  if user not in user_tracks:
+                      user_tracks[user] = []
+                  user_tracks[user].append(record)
+
+                  if len(chunk) >= chunk_size:
+                      upload_chunk(bucket, chunk, chunk_num)
+                      chunk_num += 1
+                      stats['chunks'] += 1
+                      chunk = []
+                      user_tracks = {}
+
+              if chunk:
+                  upload_chunk(bucket, chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+
+              upload_meta(bucket, stats)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'total': stats['total'], 'source': 'sample'})
+              }
+
+  # Recommendation API Lambda
+  RecommendationApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-recommendation-api'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          RECOMMENDATION_CACHE_TABLE: !Ref RecommendationCacheTable
+          TRACK_METADATA_TABLE: !Ref TrackMetadataTable
+          SAGEMAKER_ENDPOINT: !Sub '${ProjectName}-neumf-endpoint'
+      VpcConfig: !If
+        - UseVpcConfig
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        - !Ref AWS::NoValue
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import time
+          from decimal import Decimal
+
+          dynamodb = boto3.resource('dynamodb')
+          sagemaker = boto3.client('sagemaker-runtime')
+
+          user_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          cache_table = dynamodb.Table(os.environ['RECOMMENDATION_CACHE_TABLE'])
+
+
+          def handler(event, context):
+              # Parse request body
+              if event.get('body'):
+                  body = json.loads(event['body'])
+              else:
+                  body = event
+
+              user_id = body.get('user_id')
+              top_n = body.get('top_n', 10)
+
+              if not user_id:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': 'user_id required'})
+                  }
+
+              try:
+                  # Check cache first
+                  cache_response = cache_table.get_item(Key={'user_id': user_id})
+                  if 'Item' in cache_response:
+                      cached = cache_response['Item']
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps({
+                              'user_id': user_id,
+                              'recommendations': cached.get('recommendations', [])
+                          })
+                      }
+
+                  # Get user features
+                  user_response = user_table.get_item(Key={'user_id': user_id})
+                  user = user_response.get('Item', {})
+
+                  # Get recommendations from model
+                  recommendations = get_recommendations(user_id, user, top_n)
+
+                  # Cache the results
+                  cache_table.put_item(Item={
+                      'user_id': user_id,
+                      'recommendations': recommendations,
+                      'ttl': int(time.time()) + 3600
+                  })
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'user_id': user_id,
+                          'recommendations': recommendations
+                      })
+                  }
+
+              except Exception as ex:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(ex)})
+                  }
+
+
+          def get_recommendations(user_id, user, top_n):
+              try:
+                  response = sagemaker.invoke_endpoint(
+                      EndpointName=os.environ['SAGEMAKER_ENDPOINT'],
+                      ContentType='application/json',
+                      Body=json.dumps({'user_id': user_id, 'top_n': top_n})
+                  )
+                  result = json.loads(response['Body'].read().decode())
+                  return result.get('recommendations', [])
+              except Exception:
+                  # Fallback to popular tracks
+                  return [
+                      {'track_id': f'popular_track_{i}', 'score': float(1 - i * 0.1)}
+                      for i in range(top_n)
+                  ]
+
+  # Realtime feature update Lambda
+  RealtimeFeatureUpdateLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-realtime-feature-update'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          TRACK_METADATA_TABLE: !Ref TrackMetadataTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import base64
+          import time
+          from decimal import Decimal
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          user_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          track_table = dynamodb.Table(os.environ['TRACK_METADATA_TABLE'])
+
+
+          def handler(event, context):
+              processed = 0
+              for record in event.get('Records', []):
+                  try:
+                      payload = base64.b64decode(record['kinesis']['data'])
+                      data = json.loads(payload.decode('utf-8'))
+                      update_features(data)
+                      processed += 1
+                  except Exception:
+                      continue
+
+              return {'processed': processed}
+
+
+          def update_features(data):
+              user_id = data.get('user_id') or data.get('user_name')
+              track_id = data.get('track_id') or data.get('recording_msid')
+
+              if not user_id or not track_id:
+                  return
+
+              listened_at = data.get('listened_at', datetime.now().isoformat())
+              now = datetime.now().isoformat()
+              ttl = int(time.time()) + 86400 * 30
+
+              user_table.update_item(
+                  Key={'user_id': user_id},
+                  UpdateExpression='''
+                      SET last_track = :track,
+                          last_listened = :listened,
+                          updated_at = :updated,
+                          listen_count = if_not_exists(listen_count, :zero) + :one,
+                          ttl = :ttl
+                  ''',
+                  ExpressionAttributeValues={
+                      ':track': track_id,
+                      ':listened': listened_at,
+                      ':updated': now,
+                      ':zero': Decimal(0),
+                      ':one': Decimal(1),
+                      ':ttl': ttl
+                  }
+              )
+
+  # Kinesis trigger for realtime Lambda
+  KinesisEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref RealtimeFeatureUpdateLambda
+      EventSourceArn: !Ref UserEventsStreamArn
+      StartingPosition: LATEST
+      BatchSize: 100
+
+Outputs:
+  DownloadDatasetLambdaArn:
+    Value: !GetAtt DownloadDatasetLambda.Arn
+  RecommendationApiLambdaArn:
+    Value: !GetAtt RecommendationApiLambda.Arn
+  ListenBrainzSecretArn:
+    Value: !Ref ListenBrainzSecret

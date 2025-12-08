@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: NeuMF Music Recommendation System - Main Stack
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Project Settings
+      Parameters:
+      - ProjectName
+      - Environment
+    - Label:
+        default: VPC Configuration (Optional)
+      Parameters:
+      - VpcId
+      - SubnetIds
+      - SubnetAzs
+      - RouteTableIds
+    - Label:
+        default: External APIs
+      Parameters:
+      - ListenBrainzUsername
+      - ListenBrainzToken
+    - Label:
+        default: Nested Stack URLs
+      Parameters:
+      - StorageStackUrl
+      - NetworkingStackUrl
+      - IamStackUrl
+      - GlueStackUrl
+      - LambdaStackUrl
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: music-recommendation-v2
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+  VpcId:
+    Type: String
+    Default: ""
+    Description: Optional VPC ID
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+  SubnetAzs:
+    Type: CommaDelimitedList
+    Default: ""
+  RouteTableIds:
+    Type: CommaDelimitedList
+    Default: ""
+  ListenBrainzUsername:
+    Type: String
+    Default: MichaelMai
+  ListenBrainzToken:
+    NoEcho: true
+    Type: String
+    Default: ""
+  StorageStackUrl:
+    Type: String
+    Default: ""
+    Description: S3 URL for storage.yaml
+  NetworkingStackUrl:
+    Type: String
+    Default: ""
+    Description: S3 URL for networking.yaml
+  IamStackUrl:
+    Type: String
+    Default: ""
+    Description: S3 URL for iam.yaml
+  GlueStackUrl:
+    Type: String
+    Default: ""
+    Description: S3 URL for glue.yaml
+  LambdaStackUrl:
+    Type: String
+    Default: ""
+    Description: S3 URL for lambda.yaml
+
+Conditions:
+  HasNestedStacks: !Not [!Equals [!Ref StorageStackUrl, ""]]
+  UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
+
+Resources:
+  # Storage stack - S3, DynamoDB, Kinesis, Secrets
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasNestedStacks
+    Properties:
+      TemplateURL: !Ref StorageStackUrl
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+
+  # Networking stack - VPC endpoints, security groups
+  NetworkingStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasNestedStacks
+    Properties:
+      TemplateURL: !Ref NetworkingStackUrl
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !Ref VpcId
+        SubnetIds: !Join [",", !Ref SubnetIds]
+        SubnetAzs: !Join [",", !Ref SubnetAzs]
+        RouteTableIds: !Join [",", !Ref RouteTableIds]
+
+  # IAM stack - all roles
+  IamStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasNestedStacks
+    DependsOn: StorageStack
+    Properties:
+      TemplateURL: !Ref IamStackUrl
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RawDataBucketArn: !GetAtt StorageStack.Outputs.RawDataBucketArn
+        ProcessedDataBucketArn: !GetAtt StorageStack.Outputs.ProcessedDataBucketArn
+        ModelArtifactsBucketArn: !GetAtt StorageStack.Outputs.ModelArtifactsBucketArn
+        GlueScriptsBucketArn: !GetAtt StorageStack.Outputs.GlueScriptsBucketArn
+        UserFeaturesTableArn: !GetAtt StorageStack.Outputs.UserFeaturesTableArn
+        RecommendationCacheTableArn: !GetAtt StorageStack.Outputs.RecommendationCacheTableArn
+        TrackMetadataTableArn: !GetAtt StorageStack.Outputs.TrackMetadataTableArn
+        UserEventsStreamArn: !GetAtt StorageStack.Outputs.UserEventsStreamArn
+
+  # Glue stack - database, crawler, ETL job
+  GlueStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasNestedStacks
+    DependsOn:
+    - StorageStack
+    - IamStack
+    - NetworkingStack
+    Properties:
+      TemplateURL: !Ref GlueStackUrl
+      Parameters:
+        ProjectName: !Ref ProjectName
+        RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
+        ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
+        GlueScriptsBucket: !GetAtt StorageStack.Outputs.GlueScriptsBucketName
+        GlueJobRoleArn: !GetAtt IamStack.Outputs.GlueJobRoleArn
+        DatabaseSecretArn: !GetAtt StorageStack.Outputs.DatabaseCredentialsSecretArn
+        VpcId: !Ref VpcId
+        SubnetIds: !Join [",", !Ref SubnetIds]
+        SubnetAzs: !Join [",", !Ref SubnetAzs]
+        GlueSecurityGroupId: !If
+        - UseVpcConfig
+        - !GetAtt NetworkingStack.Outputs.GlueSecurityGroupId
+        - ""
+
+  # Lambda stack - all functions
+  LambdaStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasNestedStacks
+    DependsOn:
+    - StorageStack
+    - IamStack
+    - NetworkingStack
+    Properties:
+      TemplateURL: !Ref LambdaStackUrl
+      Parameters:
+        ProjectName: !Ref ProjectName
+        LambdaExecutionRoleArn: !GetAtt IamStack.Outputs.LambdaExecutionRoleArn
+        RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
+        ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
+        UserFeaturesTable: !Sub '${ProjectName}-user-features'
+        RecommendationCacheTable: !Sub '${ProjectName}-recommendation-cache'
+        TrackMetadataTable: !Sub '${ProjectName}-track-metadata'
+        UserEventsStreamArn: !GetAtt StorageStack.Outputs.UserEventsStreamArn
+        ListenBrainzToken: !Ref ListenBrainzToken
+        VpcId: !Ref VpcId
+        SubnetIds: !Join [",", !Ref SubnetIds]
+        LambdaSecurityGroupId: !If
+        - UseVpcConfig
+        - !GetAtt NetworkingStack.Outputs.LambdaSecurityGroupId
+        - ""
+
+  # ===============================
+  # API Gateway
+  # ===============================
+
+  RecommendationApi:
+    Type: AWS::ApiGateway::RestApi
+    Condition: HasNestedStacks
+    Properties:
+      Name: !Sub '${ProjectName}-api'
+      Description: Music Recommendation API
+      EndpointConfiguration:
+        Types:
+        - REGIONAL
+
+  RecommendationsResource:
+    Type: AWS::ApiGateway::Resource
+    Condition: HasNestedStacks
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      ParentId: !GetAtt RecommendationApi.RootResourceId
+      PathPart: recommendations
+
+  RecommendationsMethod:
+    Type: AWS::ApiGateway::Method
+    Condition: HasNestedStacks
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      ResourceId: !Ref RecommendationsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaStack.Outputs.RecommendationApiLambdaArn}/invocations'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Condition: HasNestedStacks
+    DependsOn: RecommendationsMethod
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      StageName: !Ref Environment
+
+  ApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasNestedStacks
+    Properties:
+      FunctionName: !GetAtt LambdaStack.Outputs.RecommendationApiLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RecommendationApi}/*'
+
+Outputs:
+  ApiEndpoint:
+    Condition: HasNestedStacks
+    Value: !Sub 'https://${RecommendationApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+  RawDataBucket:
+    Condition: HasNestedStacks
+    Value: !GetAtt StorageStack.Outputs.RawDataBucketName
+  GlueETLJob:
+    Condition: HasNestedStacks
+    Value: !GetAtt GlueStack.Outputs.GlueETLJobName
