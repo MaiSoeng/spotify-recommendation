@@ -80,6 +80,9 @@ Parameters:
   LambdaStackUrl:
     Type: String
     Default: ""
+  PipelineBucket:
+    Type: String
+    Description: Name of the pipeline artifact bucket
   AlarmEmail:
     Type: String
     Description: Email for alarm notifications
@@ -146,6 +149,7 @@ Resources:
         RecommendationCacheTableArn: !GetAtt StorageStack.Outputs.RecommendationCacheTableArn
         TrackMetadataTableArn: !GetAtt StorageStack.Outputs.TrackMetadataTableArn
         UserEventsStreamArn: !GetAtt StorageStack.Outputs.UserEventsStreamArn
+        PipelineBucketArn: !Sub 'arn:aws:s3:::${PipelineBucket}'
 
   # Glue stack - database, crawler, ETL job
   GlueStack:
@@ -161,7 +165,9 @@ Resources:
         ProjectName: !Ref ProjectName
         RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
         ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
-        GlueScriptsBucket: !GetAtt StorageStack.Outputs.GlueScriptsBucketName
+        RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
+        ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
+        GlueScriptsBucket: !Ref PipelineBucket
         GlueJobRoleArn: !GetAtt IamStack.Outputs.GlueJobRoleArn
         DatabaseSecretArn: !GetAtt StorageStack.Outputs.DatabaseCredentialsSecretArn
         VpcId: !Ref VpcId
