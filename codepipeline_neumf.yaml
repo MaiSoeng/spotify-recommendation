@@ -126,7 +126,7 @@ Resources:
             pre_build:
               commands:
                 - echo "Running tests..."
-                - python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
+                - python -c "import torch; print(torch.__version__)"
                 - echo "Validating CloudFormation templates..."
                 - for f in stacks/*.yaml main.yaml; do aws cloudformation validate-template --template-body file://$f && echo "$f OK"; done
             build:
@@ -784,6 +784,10 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
               - Effect: Allow
                 Action:
                   - s3:GetObject
