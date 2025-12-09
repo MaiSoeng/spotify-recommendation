@@ -21,6 +21,9 @@ Parameters:
   UserEventsStreamArn:
     Type: String
     Description: ARN of the Kinesis stream for user events
+  PipelineBucketArn:
+    Type: String
+    Description: ARN of the pipeline artifact bucket containing scripts
   SecretsKMSKeyArn:
     Type: String
     Default: ""
@@ -187,6 +190,8 @@ Resources:
             - !Sub '${ProcessedDataBucketArn}/*'
             - !Ref GlueScriptsBucketArn
             - !Sub '${GlueScriptsBucketArn}/*'
+            - !Ref PipelineBucketArn
+            - !Sub '${PipelineBucketArn}/*'
       - PolicyName: GlueLakeFormation
         PolicyDocument:
           Version: 2012-10-17

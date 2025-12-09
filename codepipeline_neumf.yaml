@@ -484,10 +484,10 @@ Resources:
               Configuration:
                 ProjectName: !Ref TestAndPackageBuild
 
-        # Stage 3: Deploy Storage Stack
-        - Name: DeployStorage
+        # Stage 3: Deploy Infrastructure (Nested Stacks)
+        - Name: DeployInfrastructure
           Actions:
-            - Name: DeployStorageStack
+            - Name: DeployMainStack
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -495,114 +495,21 @@ Resources:
                 Version: '1'
               InputArtifacts:
                 - Name: PackageArtifact
-              Namespace: StorageVariables
               Configuration:
                 ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-storage'
-                TemplatePath: PackageArtifact::stacks/storage.yaml
-                ParameterOverrides: !Sub '{"ProjectName": "${ProjectName}"}'
-                Capabilities: CAPABILITY_NAMED_IAM
-                RoleArn: !GetAtt CloudFormationRole.Arn
-
-        # Stage 4: Deploy Networking & IAM
-        - Name: DeployNetworkingAndIAM
-          Actions:
-            - Name: DeployNetworking
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: PackageArtifact
-              Namespace: NetworkingVariables
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-networking'
-                TemplatePath: PackageArtifact::stacks/networking.yaml
-                ParameterOverrides: !Sub '{"ProjectName": "${ProjectName}"}'
-                Capabilities: CAPABILITY_NAMED_IAM
-                RoleArn: !GetAtt CloudFormationRole.Arn
-              RunOrder: 1
-            - Name: DeployIAM
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: PackageArtifact
-              Namespace: IamVariables
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-iam'
-                TemplatePath: PackageArtifact::stacks/iam.yaml
+                StackName: !Sub '${ProjectName}-main'
+                TemplatePath: PackageArtifact::main.yaml
                 ParameterOverrides: !Sub |
                   {
                     "ProjectName": "${ProjectName}",
-                    "RawDataBucketArn": "#{StorageVariables.RawDataBucketArn}",
-                    "ProcessedDataBucketArn": "#{StorageVariables.ProcessedDataBucketArn}",
-                    "ModelArtifactsBucketArn": "#{StorageVariables.ModelArtifactsBucketArn}",
-                    "GlueScriptsBucketArn": "#{StorageVariables.GlueScriptsBucketArn}",
-                    "UserFeaturesTableArn": "#{StorageVariables.UserFeaturesTableArn}",
-                    "RecommendationCacheTableArn": "#{StorageVariables.RecommendationCacheTableArn}",
-                    "TrackMetadataTableArn": "#{StorageVariables.TrackMetadataTableArn}",
-                    "UserEventsStreamArn": "#{StorageVariables.UserEventsStreamArn}"
+                    "StorageStackUrl": "https://s3.${AWS::Region}.amazonaws.com/${PipelineArtifactBucket}/templates/stacks/storage.yaml",
+                    "NetworkingStackUrl": "https://s3.${AWS::Region}.amazonaws.com/${PipelineArtifactBucket}/templates/stacks/networking.yaml",
+                    "IamStackUrl": "https://s3.${AWS::Region}.amazonaws.com/${PipelineArtifactBucket}/templates/stacks/iam.yaml",
+                    "GlueStackUrl": "https://s3.${AWS::Region}.amazonaws.com/${PipelineArtifactBucket}/templates/stacks/glue.yaml",
+                    "LambdaStackUrl": "https://s3.${AWS::Region}.amazonaws.com/${PipelineArtifactBucket}/templates/stacks/lambda.yaml",
+                    "PipelineBucket": "${PipelineArtifactBucket}"
                   }
-                Capabilities: CAPABILITY_NAMED_IAM
-                RoleArn: !GetAtt CloudFormationRole.Arn
-              RunOrder: 1
-
-        # Stage 5: Deploy Glue & Lambda
-        - Name: DeployGlueAndLambda
-          Actions:
-            - Name: DeployGlue
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: PackageArtifact
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-glue'
-                TemplatePath: PackageArtifact::stacks/glue.yaml
-                ParameterOverrides: !Sub |
-                  {
-                    "ProjectName": "${ProjectName}",
-                    "RawDataBucket": "#{StorageVariables.RawDataBucket}",
-                    "ProcessedDataBucket": "#{StorageVariables.ProcessedDataBucket}",
-                    "GlueScriptsBucket": "#{StorageVariables.GlueScriptsBucket}",
-                    "GlueJobRoleArn": "#{IamVariables.GlueJobRoleArn}"
-                  }
-                Capabilities: CAPABILITY_NAMED_IAM
-                RoleArn: !GetAtt CloudFormationRole.Arn
-              RunOrder: 1
-            - Name: DeployLambda
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: PackageArtifact
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-lambda'
-                TemplatePath: PackageArtifact::stacks/lambda.yaml
-                ParameterOverrides: !Sub |
-                  {
-                    "ProjectName": "${ProjectName}",
-                    "LambdaExecutionRoleArn": "#{IamVariables.LambdaExecutionRoleArn}",
-                    "RawDataBucket": "#{StorageVariables.RawDataBucket}",
-                    "ProcessedDataBucket": "#{StorageVariables.ProcessedDataBucket}",
-                    "UserFeaturesTable": "${ProjectName}-user-features",
-                    "RecommendationCacheTable": "${ProjectName}-recommendation-cache",
-                    "TrackMetadataTable": "${ProjectName}-track-metadata",
-                    "UserEventsStreamArn": "#{StorageVariables.UserEventsStreamArn}"
-                  }
-                Capabilities: CAPABILITY_NAMED_IAM
+                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
                 RoleArn: !GetAtt CloudFormationRole.Arn
               RunOrder: 1
 
@@ -812,6 +719,7 @@ Resources:
                   - cloudformation:UpdateStack
                   - cloudformation:DeleteStack
                   - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
                   - cloudformation:CreateChangeSet
                   - cloudformation:ExecuteChangeSet
                   - cloudformation:DescribeChangeSet

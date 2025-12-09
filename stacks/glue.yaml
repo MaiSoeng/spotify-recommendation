@@ -177,6 +177,8 @@ Resources:
           DatabaseName: !Ref GlueDatabase
           TableWildcard: {}
 
+
+
 Outputs:
   GlueDatabaseName:
     Value: !Ref GlueDatabase
