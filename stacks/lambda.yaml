@@ -26,10 +26,6 @@ Parameters:
     Type: String
     Default: ""
 
-    Default: ""
-  VpcId:
-    Type: String
-    Default: ""
   SubnetIds:
     Type: CommaDelimitedList
     Default: ""
