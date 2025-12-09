@@ -28,10 +28,14 @@ Parameters:
   GlueSecurityGroupId:
     Type: String
     Default: ""
+  AlarmTopicArn:
+    Type: String
+    Default: ""
 
 Conditions:
   UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
   HasDatabaseSecret: !Not [!Equals [!Ref DatabaseSecretArn, ""]]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
 
 Resources:
   # Glue database for recommendation data
@@ -106,6 +110,27 @@ Resources:
         - []
       ExecutionProperty:
         MaxConcurrentRuns: 1
+
+  GlueJobAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-glue-etl-failed'
+      AlarmDescription: Alarm if Glue ETL job fails
+      Namespace: Glue
+      MetricName: glue.driver.aggregate.numFailedTasks
+      Dimensions:
+      - Name: JobName
+        Value: !Ref GlueETLJob
+      - Name: Type
+        Value: Gauge
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
 
   # ===============================
   # Lake Formation Permissions

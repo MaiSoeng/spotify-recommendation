@@ -21,9 +21,13 @@ Parameters:
     Type: String
     Default: ""
     Description: ListenBrainz API token
+  AlarmTopicArn:
+    Type: String
+    Default: ""
 
 Conditions:
   GenerateDBPassword: !Equals [!Ref DBPassword, ""]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
 
 Resources:
   # KMS key for secrets encryption
@@ -202,6 +206,25 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
 
+  UserFeaturesThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-user-features-throttles'
+      AlarmDescription: Alarm if DynamoDB throttles > 0
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+      - Name: TableName
+        Value: !Ref UserFeaturesTable
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
   RecommendationCacheTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -259,6 +282,25 @@ Resources:
       StreamEncryption:
         EncryptionType: KMS
         KeyId: !Ref SecretsKMSKey
+
+  UserEventsStreamLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-kinesis-lag'
+      AlarmDescription: Alarm if Kinesis IteratorAge > 1000ms
+      Namespace: AWS/Kinesis
+      MetricName: GetRecords.IteratorAgeMilliseconds
+      Dimensions:
+      - Name: StreamName
+        Value: !Ref UserEventsStream
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
 
 Outputs:
   SecretsKMSKeyArn:

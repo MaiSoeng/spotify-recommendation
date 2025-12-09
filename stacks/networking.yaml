@@ -49,20 +49,36 @@ Resources:
       GroupName: !Sub '${ProjectName}-glue-sg'
       GroupDescription: Security group for Glue ETL jobs
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 0
-        ToPort: 65535
-        SourceSecurityGroupId: !Ref GlueSecurityGroup
-      SecurityGroupEgress:
-      - IpProtocol: tcp
-        FromPort: 443
-        ToPort: 443
-        CidrIp: 0.0.0.0/0
-      - IpProtocol: tcp
-        FromPort: 0
-        ToPort: 65535
-        DestinationSecurityGroupId: !Ref GlueSecurityGroup
+
+  GlueSecurityGroupIngressSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: UseVpcConfig
+    Properties:
+      GroupId: !Ref GlueSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref GlueSecurityGroup
+
+  GlueSecurityGroupEgressSelf:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: UseVpcConfig
+    Properties:
+      GroupId: !Ref GlueSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      DestinationSecurityGroupId: !Ref GlueSecurityGroup
+
+  GlueSecurityGroupEgressHTTPS:
+    Type: AWS::EC2::SecurityGroupEgress
+    Condition: UseVpcConfig
+    Properties:
+      GroupId: !Ref GlueSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
 
   # ===============================
   # VPC Endpoints

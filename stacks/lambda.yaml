@@ -25,15 +25,46 @@ Parameters:
   VpcId:
     Type: String
     Default: ""
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda Functions
+
+Parameters:
+  ProjectName:
+    Type: String
+  LambdaExecutionRoleArn:
+    Type: String
+  RawDataBucket:
+    Type: String
+  ProcessedDataBucket:
+    Type: String
+  UserFeaturesTable:
+    Type: String
+  RecommendationCacheTable:
+    Type: String
+  TrackMetadataTable:
+    Type: String
+  UserEventsStreamArn:
+    Type: String
+  ListenBrainzToken:
+    NoEcho: true
+    Type: String
+    Default: ""
+  VpcId:
+    Type: String
+    Default: ""
   SubnetIds:
     Type: CommaDelimitedList
     Default: ""
   LambdaSecurityGroupId:
     Type: String
     Default: ""
+  AlarmTopicArn:
+    Type: String
+    Default: ""
 
 Conditions:
   UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
 
 Resources:
   # ListenBrainz API token secret
@@ -44,6 +75,31 @@ Resources:
       SecretString: !Sub '{"token": "${ListenBrainzToken}"}'
 
   # Lambda for downloading Last.fm dataset
+  DownloadDatasetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-download-dataset'
+      RetentionInDays: 30
+
+  DownloadDatasetErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-download-dataset-errors'
+      AlarmDescription: Alarm if lambda errors > 0
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref DownloadDatasetLambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
   DownloadDatasetLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -272,6 +328,31 @@ Resources:
               }
 
   # Recommendation API Lambda
+  RecommendationApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-recommendation-api'
+      RetentionInDays: 30
+
+  RecommendationApiErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-recommendation-api-errors'
+      AlarmDescription: Alarm if lambda errors > 0
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref RecommendationApiLambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
   RecommendationApiLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -383,6 +464,31 @@ Resources:
                   ]
 
   # Realtime feature update Lambda
+  RealtimeFeatureUpdateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-realtime-feature-update'
+      RetentionInDays: 30
+
+  RealtimeFeatureUpdateErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-realtime-feature-update-errors'
+      AlarmDescription: Alarm if lambda errors > 0
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref RealtimeFeatureUpdateLambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
   RealtimeFeatureUpdateLambda:
     Type: AWS::Lambda::Function
     Properties:
