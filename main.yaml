@@ -80,13 +80,31 @@ Parameters:
   LambdaStackUrl:
     Type: String
     Default: ""
-    Description: S3 URL for lambda.yaml
+  AlarmEmail:
+    Type: String
+    Description: Email for alarm notifications
+    Default: ""
 
 Conditions:
   HasNestedStacks: !Not [!Equals [!Ref StorageStackUrl, ""]]
   UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
 
 Resources:
+  # Alarm SNS Topic
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alarms'
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
   # Storage stack - S3, DynamoDB, Kinesis, Secrets
   StorageStack:
     Type: AWS::CloudFormation::Stack
@@ -96,6 +114,7 @@ Resources:
       Parameters:
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
+        AlarmTopicArn: !Ref AlarmTopic
 
   # Networking stack - VPC endpoints, security groups
   NetworkingStack:
@@ -152,6 +171,7 @@ Resources:
         - UseVpcConfig
         - !GetAtt NetworkingStack.Outputs.GlueSecurityGroupId
         - ""
+        AlarmTopicArn: !Ref AlarmTopic
 
   # Lambda stack - all functions
   LambdaStack:
@@ -179,6 +199,7 @@ Resources:
         - UseVpcConfig
         - !GetAtt NetworkingStack.Outputs.LambdaSecurityGroupId
         - ""
+        AlarmTopicArn: !Ref AlarmTopic
 
   # ===============================
   # API Gateway

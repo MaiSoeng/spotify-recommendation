@@ -495,6 +495,7 @@ Resources:
                 Version: '1'
               InputArtifacts:
                 - Name: PackageArtifact
+              Namespace: StorageVariables
               Configuration:
                 ActionMode: CREATE_UPDATE
                 StackName: !Sub '${ProjectName}-storage'
@@ -514,6 +515,7 @@ Resources:
                 Version: '1'
               InputArtifacts:
                 - Name: PackageArtifact
+              Namespace: NetworkingVariables
               Configuration:
                 ActionMode: CREATE_UPDATE
                 StackName: !Sub '${ProjectName}-networking'
@@ -530,6 +532,7 @@ Resources:
                 Version: '1'
               InputArtifacts:
                 - Name: PackageArtifact
+              Namespace: IamVariables
               Configuration:
                 ActionMode: CREATE_UPDATE
                 StackName: !Sub '${ProjectName}-iam'
@@ -537,14 +540,14 @@ Resources:
                 ParameterOverrides: !Sub |
                   {
                     "ProjectName": "${ProjectName}",
-                    "RawDataBucketArn": {"Fn::ImportValue": "${ProjectName}-RawDataBucketArn"},
-                    "ProcessedDataBucketArn": {"Fn::ImportValue": "${ProjectName}-ProcessedDataBucketArn"},
-                    "ModelArtifactsBucketArn": {"Fn::ImportValue": "${ProjectName}-ModelArtifactsBucketArn"},
-                    "GlueScriptsBucketArn": {"Fn::ImportValue": "${ProjectName}-GlueScriptsBucketArn"},
-                    "UserFeaturesTableArn": {"Fn::ImportValue": "${ProjectName}-UserFeaturesTableArn"},
-                    "RecommendationCacheTableArn": {"Fn::ImportValue": "${ProjectName}-RecommendationCacheTableArn"},
-                    "TrackMetadataTableArn": {"Fn::ImportValue": "${ProjectName}-TrackMetadataTableArn"},
-                    "UserEventsStreamArn": {"Fn::ImportValue": "${ProjectName}-UserEventsStreamArn"}
+                    "RawDataBucketArn": "#{StorageVariables.RawDataBucketArn}",
+                    "ProcessedDataBucketArn": "#{StorageVariables.ProcessedDataBucketArn}",
+                    "ModelArtifactsBucketArn": "#{StorageVariables.ModelArtifactsBucketArn}",
+                    "GlueScriptsBucketArn": "#{StorageVariables.GlueScriptsBucketArn}",
+                    "UserFeaturesTableArn": "#{StorageVariables.UserFeaturesTableArn}",
+                    "RecommendationCacheTableArn": "#{StorageVariables.RecommendationCacheTableArn}",
+                    "TrackMetadataTableArn": "#{StorageVariables.TrackMetadataTableArn}",
+                    "UserEventsStreamArn": "#{StorageVariables.UserEventsStreamArn}"
                   }
                 Capabilities: CAPABILITY_NAMED_IAM
                 RoleArn: !GetAtt CloudFormationRole.Arn
@@ -568,10 +571,10 @@ Resources:
                 ParameterOverrides: !Sub |
                   {
                     "ProjectName": "${ProjectName}",
-                    "RawDataBucket": {"Fn::ImportValue": "${ProjectName}-RawDataBucket"},
-                    "ProcessedDataBucket": {"Fn::ImportValue": "${ProjectName}-ProcessedDataBucket"},
-                    "GlueScriptsBucket": {"Fn::ImportValue": "${ProjectName}-GlueScriptsBucket"},
-                    "GlueJobRoleArn": {"Fn::ImportValue": "${ProjectName}-GlueRoleArn"}
+                    "RawDataBucket": "#{StorageVariables.RawDataBucket}",
+                    "ProcessedDataBucket": "#{StorageVariables.ProcessedDataBucket}",
+                    "GlueScriptsBucket": "#{StorageVariables.GlueScriptsBucket}",
+                    "GlueJobRoleArn": "#{IamVariables.GlueJobRoleArn}"
                   }
                 Capabilities: CAPABILITY_NAMED_IAM
                 RoleArn: !GetAtt CloudFormationRole.Arn
@@ -591,13 +594,13 @@ Resources:
                 ParameterOverrides: !Sub |
                   {
                     "ProjectName": "${ProjectName}",
-                    "LambdaExecutionRoleArn": {"Fn::ImportValue": "${ProjectName}-LambdaRoleArn"},
-                    "RawDataBucket": {"Fn::ImportValue": "${ProjectName}-RawDataBucket"},
-                    "ProcessedDataBucket": {"Fn::ImportValue": "${ProjectName}-ProcessedDataBucket"},
+                    "LambdaExecutionRoleArn": "#{IamVariables.LambdaExecutionRoleArn}",
+                    "RawDataBucket": "#{StorageVariables.RawDataBucket}",
+                    "ProcessedDataBucket": "#{StorageVariables.ProcessedDataBucket}",
                     "UserFeaturesTable": "${ProjectName}-user-features",
                     "RecommendationCacheTable": "${ProjectName}-recommendation-cache",
                     "TrackMetadataTable": "${ProjectName}-track-metadata",
-                    "UserEventsStreamArn": {"Fn::ImportValue": "${ProjectName}-UserEventsStreamArn"}
+                    "UserEventsStreamArn": "#{StorageVariables.UserEventsStreamArn}"
                   }
                 Capabilities: CAPABILITY_NAMED_IAM
                 RoleArn: !GetAtt CloudFormationRole.Arn

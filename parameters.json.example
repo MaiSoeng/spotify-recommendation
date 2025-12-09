@@ -11,7 +11,7 @@
     "DBPassword": "REPLACE_WITH_SECURE_PASSWORD",
     "ListenBrainzUsername": "MichaelMai",
     "ListenBrainzToken": "REPLACE_WITH_YOUR_TOKEN",
-    "CodeStarConnectionArn": "arn:aws:codestar-connections:us-east-1:123456789012:connection/abcdef-1234-5678-abcd-ef1234567890",
+    "CodeStarConnectionArn": "arn:aws:codeconnections:us-east-1:933822101078:connection/7b5c31e0-4af1-473d-9477-ea42f76bf14a",
     "SageMakerTrainingInstanceType": "ml.m5.xlarge",
     "SageMakerInferenceInstanceType": "ml.t2.medium"
   }
