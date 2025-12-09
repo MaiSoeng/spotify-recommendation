@@ -25,29 +25,7 @@ Parameters:
   VpcId:
     Type: String
     Default: ""
-AWSTemplateFormatVersion: "2010-09-09"
-Description: Lambda Functions
 
-Parameters:
-  ProjectName:
-    Type: String
-  LambdaExecutionRoleArn:
-    Type: String
-  RawDataBucket:
-    Type: String
-  ProcessedDataBucket:
-    Type: String
-  UserFeaturesTable:
-    Type: String
-  RecommendationCacheTable:
-    Type: String
-  TrackMetadataTable:
-    Type: String
-  UserEventsStreamArn:
-    Type: String
-  ListenBrainzToken:
-    NoEcho: true
-    Type: String
     Default: ""
   VpcId:
     Type: String

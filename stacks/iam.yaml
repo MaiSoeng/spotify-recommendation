@@ -20,6 +20,7 @@ Parameters:
     Type: String
   UserEventsStreamArn:
     Type: String
+    Description: ARN of the Kinesis stream for user events
   SecretsKMSKeyArn:
     Type: String
     Default: ""
