@@ -165,8 +165,6 @@ Resources:
         ProjectName: !Ref ProjectName
         RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
         ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
-        RawDataBucket: !GetAtt StorageStack.Outputs.RawDataBucketName
-        ProcessedDataBucket: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
         GlueScriptsBucket: !Ref PipelineBucket
         GlueJobRoleArn: !GetAtt IamStack.Outputs.GlueJobRoleArn
         DatabaseSecretArn: !GetAtt StorageStack.Outputs.DatabaseCredentialsSecretArn

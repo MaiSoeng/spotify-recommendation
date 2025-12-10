@@ -108,7 +108,7 @@ Resources:
         Connections: !If
         - UseVpcConfig
         - - !Ref GlueVpcConnection
-        - []
+        - !Ref AWS::NoValue
       ExecutionProperty:
         MaxConcurrentRuns: 1
 
