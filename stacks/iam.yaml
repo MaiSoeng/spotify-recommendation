@@ -154,6 +154,16 @@ Resources:
             - secretsmanager:GetSecretValue
             - secretsmanager:DescribeSecret
             Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*'
+      - PolicyName: LambdaKMSAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - kms:Encrypt
+            - kms:Decrypt
+            - kms:GenerateDataKey*
+            Resource: !Ref SecretsKMSKeyArn
 
   # Glue job role
   GlueJobRole:
@@ -251,6 +261,16 @@ Resources:
             Action:
             - secretsmanager:GetSecretValue
             Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*'
+      - PolicyName: GlueKMSAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - kms:Encrypt
+            - kms:Decrypt
+            - kms:GenerateDataKey*
+            Resource: !Ref SecretsKMSKeyArn
 
   # SageMaker execution role
   SageMakerExecutionRole:

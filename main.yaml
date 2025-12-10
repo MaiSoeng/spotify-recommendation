@@ -171,6 +171,7 @@ Resources:
         TrackMetadataTableArn: !GetAtt StorageStack.Outputs.TrackMetadataTableArn
         UserEventsStreamArn: !GetAtt StorageStack.Outputs.UserEventsStreamArn
         PipelineBucketArn: !Sub 'arn:aws:s3:::${PipelineBucket}'
+        SecretsKMSKeyArn: !GetAtt StorageStack.Outputs.SecretsKMSKeyArn
 
   # Glue stack - database, crawler, ETL job
   GlueStack:
