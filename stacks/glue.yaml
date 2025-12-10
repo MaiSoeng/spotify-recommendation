@@ -46,6 +46,7 @@ Resources:
       DatabaseInput:
         Name: !Sub '${ProjectName}_db'
         Description: Database for music recommendation data
+        LocationUri: !Sub 's3://${RawDataBucket}/'
 
   # VPC connection for Glue jobs
   GlueVpcConnection:
@@ -133,49 +134,92 @@ Resources:
       - !Ref AlarmTopicArn
 
   # ===============================
-  # Lake Formation Permissions
+  # Lake Formation Configuration
   # ===============================
 
+  LakeFormationSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+      - DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      - DataLakePrincipalIdentifier: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-cloudformation-role'
+
   # Register raw data bucket
-  LakeFormationRawData:
+  LakeFormationRawDataLocation:
     Type: AWS::LakeFormation::Resource
     Properties:
       ResourceArn: !Sub 'arn:aws:s3:::${RawDataBucket}'
       UseServiceLinkedRole: true
 
   # Register processed data bucket
-  LakeFormationProcessedData:
+  LakeFormationProcessedDataLocation:
     Type: AWS::LakeFormation::Resource
     Properties:
       ResourceArn: !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
       UseServiceLinkedRole: true
 
-  # Grant database permissions
+  # Lake Formation Database Permissions
   LakeFormationDatabasePermission:
-    Type: AWS::LakeFormation::Permissions
-    DependsOn: GlueDatabase
+    Type: AWS::LakeFormation::PrincipalPermissions
     Properties:
-      DataLakePrincipal:
-        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
-      Permissions:
-      - ALL
       Resource:
-        DatabaseResource:
+        Database:
+          CatalogId: !Ref AWS::AccountId
           Name: !Ref GlueDatabase
-
-  # Grant table permissions
-  LakeFormationTablePermission:
-    Type: AWS::LakeFormation::Permissions
-    DependsOn: GlueDatabase
-    Properties:
-      DataLakePrincipal:
+      Principal:
         DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
       Permissions:
       - ALL
+      PermissionsWithGrantOption:
+      - ALL
+
+  # Lake Formation Table Permissions (Wildcard)
+  LakeFormationTablePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Properties:
       Resource:
-        TableResource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
           DatabaseName: !Ref GlueDatabase
           TableWildcard: {}
+      Principal:
+        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      Permissions:
+      - ALL
+      PermissionsWithGrantOption:
+      - ALL
+
+  # Lake Formation Data Location Permissions (Raw Data)
+  LakeFormationRawDataLocationPermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: LakeFormationRawDataLocation
+    Properties:
+      Resource:
+        DataLocation:
+          CatalogId: !Ref AWS::AccountId
+          ResourceArn: !Sub 'arn:aws:s3:::${RawDataBucket}'
+      Principal:
+        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      Permissions:
+      - DATA_LOCATION_ACCESS
+      PermissionsWithGrantOption:
+      - DATA_LOCATION_ACCESS
+
+  # Lake Formation Data Location Permissions (Processed Data)
+  LakeFormationProcessedDataLocationPermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: LakeFormationProcessedDataLocation
+    Properties:
+      Resource:
+        DataLocation:
+          CatalogId: !Ref AWS::AccountId
+          ResourceArn: !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
+      Principal:
+        DataLakePrincipalIdentifier: !Ref GlueJobRoleArn
+      Permissions:
+      - DATA_LOCATION_ACCESS
+      PermissionsWithGrantOption:
+      - DATA_LOCATION_ACCESS
 
 
 

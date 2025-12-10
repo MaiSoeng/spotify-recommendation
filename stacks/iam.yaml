@@ -192,14 +192,43 @@ Resources:
             - !Sub '${GlueScriptsBucketArn}/*'
             - !Ref PipelineBucketArn
             - !Sub '${PipelineBucketArn}/*'
-      - PolicyName: GlueLakeFormation
+      - PolicyName: LakeFormationAccess
         PolicyDocument:
-          Version: 2012-10-17
+          Version: '2012-10-17'
           Statement:
           - Effect: Allow
             Action:
-            - lakeformation:GetDataAccess
+            - lakeformation:*
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - iam:PassRole
+            Resource:
+            - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-glue-role'
+          - Effect: Allow
+            Action:
             - lakeformation:GrantPermissions
+            - lakeformation:RevokePermissions
+            - lakeformation:ListPermissions
+            - lakeformation:GetResourceLFTags
+            - lakeformation:PutResourceLFTags
+            - lakeformation:DeleteResourceLFTags
+            - lakeformation:GetDataLakeSettings
+            - lakeformation:PutDataLakeSettings
+            - lakeformation:GetEffectivePermissionsForPath
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - lakeformation:GetDataAccess
+            - lakeformation:GetTableObjects
+            - lakeformation:GetWorkUnits
+            - lakeformation:StartQueryPlanning
+            - lakeformation:GetWorkUnitResults
+            - lakeformation:GetQueryState
+            - lakeformation:GetQueryStatistics
+            - lakeformation:StopQueryPlanning
+            - lakeformation:UpdateTableObjects
+            - lakeformation:DeleteTableObjects
             Resource: '*'
       - PolicyName: GlueVpcAccess
         PolicyDocument:
