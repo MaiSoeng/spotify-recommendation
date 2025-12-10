@@ -51,7 +51,6 @@ Resources:
   # VPC connection for Glue jobs
   GlueVpcConnection:
     Type: AWS::Glue::Connection
-    Condition: UseVpcConfig
     Properties:
       CatalogId: !Ref AWS::AccountId
       ConnectionInput:
@@ -105,10 +104,8 @@ Resources:
         - !Ref DatabaseSecretArn
         - ''
       Connections:
-        Connections: !If
-        - UseVpcConfig
-        - - !Ref GlueVpcConnection
-        - !Ref AWS::NoValue
+        Connections:
+          - !Ref GlueVpcConnection
       ExecutionProperty:
         MaxConcurrentRuns: 1
 
