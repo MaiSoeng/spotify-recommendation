@@ -159,7 +159,7 @@ Resources:
       UseServiceLinkedRole: true
 
   # Lake Formation Database Permissions
-  LakeFormationDatabasePermission:
+  LakeFormationDatabasePermissionV2:
     Type: AWS::LakeFormation::PrincipalPermissions
     Properties:
       Resource:
@@ -174,7 +174,7 @@ Resources:
       - ALL
 
   # Lake Formation Table Permissions (Wildcard)
-  LakeFormationTablePermission:
+  LakeFormationTablePermissionV2:
     Type: AWS::LakeFormation::PrincipalPermissions
     Properties:
       Resource:
@@ -190,7 +190,7 @@ Resources:
       - ALL
 
   # Lake Formation Data Location Permissions (Raw Data)
-  LakeFormationRawDataLocationPermission:
+  LakeFormationRawDataLocationPermissionV2:
     Type: AWS::LakeFormation::PrincipalPermissions
     DependsOn: LakeFormationRawDataLocation
     Properties:
@@ -206,7 +206,7 @@ Resources:
       - DATA_LOCATION_ACCESS
 
   # Lake Formation Data Location Permissions (Processed Data)
-  LakeFormationProcessedDataLocationPermission:
+  LakeFormationProcessedDataLocationPermissionV2:
     Type: AWS::LakeFormation::PrincipalPermissions
     DependsOn: LakeFormationProcessedDataLocation
     Properties:
