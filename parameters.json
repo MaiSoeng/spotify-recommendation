@@ -1,15 +1,11 @@
 {
   "Parameters": {
-    "ProjectName": "project-recommendation-system",
+    "ProjectName": "music-recommendation-v2",
     "VpcId": "vpc-09155e992773617fb",
     "SubnetIds": "subnet-03ceddb362a5b747b,subnet-0ed9aec28fe7d0bd6",
     "SubnetAzs": "us-east-1a,us-east-1d",
     "RouteTableIds": "rtb-0c3d34139955980d2,rtb-07bb5a4a52ca1fead",
-    "DBName": "recommendationdata",
-    "DBUsername": "usermi",
-    "DBPassword": "mi123456",
     "ListenBrainzUsername": "MichaelMai",
-    "ListenBrainzToken": "L9KSXxfnBDe039ZQCtuJRfuxaWorxNYAoXWedLoA",
-    "GitHubToken": "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"
+    "ListenBrainzToken": "L9KSXxfnBDe039ZQCtuJRfuxaWorxNYAoXWedLoA"
   }
 }

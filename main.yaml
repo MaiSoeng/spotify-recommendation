@@ -34,6 +34,8 @@ Parameters:
   ProjectName:
     Type: String
     Default: music-recommendation-v2
+    Description: Project name prefix
+
   Environment:
     Type: String
     Default: dev
@@ -41,48 +43,67 @@ Parameters:
     - dev
     - staging
     - prod
+    Description: Deployment environment
+
   VpcId:
-    Type: String
-    Default: ""
-    Description: Optional VPC ID
+    Type: AWS::EC2::VPC::Id
+    Description: Select a VPC with Subnets covering 2 Availability zone at least.
+    MinLength: 1
+
   SubnetIds:
-    Type: CommaDelimitedList
-    Default: ""
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select two private subnets covering 2 Availability zone at least.
+    MinLength: 2
+
   SubnetAzs:
-    Type: CommaDelimitedList
-    Default: ""
+    Type: List<String>
+    Description: AZ names corresponding to SubnetIds
+
   RouteTableIds:
     Type: CommaDelimitedList
+    Description: Route table IDs for the VPC
     Default: ""
+
   ListenBrainzUsername:
     Type: String
     Default: MichaelMai
+    Description: Username for ListenBrainz API
+
   ListenBrainzToken:
     NoEcho: true
     Type: String
     Default: ""
+    Description: Token for ListenBrainz API
+
   StorageStackUrl:
     Type: String
     Default: ""
     Description: S3 URL for storage.yaml
+
   NetworkingStackUrl:
     Type: String
     Default: ""
     Description: S3 URL for networking.yaml
+
   IamStackUrl:
     Type: String
     Default: ""
     Description: S3 URL for iam.yaml
+
   GlueStackUrl:
     Type: String
     Default: ""
     Description: S3 URL for glue.yaml
+
   LambdaStackUrl:
     Type: String
     Default: ""
+    Description: S3 URL for lambda.yaml
+
   PipelineBucket:
     Type: String
     Description: Name of the pipeline artifact bucket
+
   AlarmEmail:
     Type: String
     Description: Email for alarm notifications
@@ -171,10 +192,7 @@ Resources:
         VpcId: !Ref VpcId
         SubnetIds: !Join [",", !Ref SubnetIds]
         SubnetAzs: !Join [",", !Ref SubnetAzs]
-        GlueSecurityGroupId: !If
-        - UseVpcConfig
-        - !GetAtt NetworkingStack.Outputs.GlueSecurityGroupId
-        - ""
+        GlueSecurityGroupId: !GetAtt NetworkingStack.Outputs.GlueSecurityGroupId
         AlarmTopicArn: !Ref AlarmTopic
 
   # Lambda stack - all functions
