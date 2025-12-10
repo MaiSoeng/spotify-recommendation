@@ -468,38 +468,7 @@ Resources:
               OutputArtifacts:
                 - Name: SourceArtifact
 
-        # Stage 2: Update Pipeline (Self-Mutate)
-        - Name: UpdatePipeline
-          Actions:
-            - Name: UpdatePipelineStack
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: SourceArtifact
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Sub '${ProjectName}-pipeline'
-                TemplatePath: SourceArtifact::codepipeline_neumf.yaml
-                ParameterOverrides: !Sub |
-                  {
-                    "ProjectName": "${ProjectName}",
-                    "GitHubOwner": "${GitHubOwner}",
-                    "GitHubRepo": "${GitHubRepo}",
-                    "GitHubBranch": "${GitHubBranch}",
-                    "CodeStarConnectionArn": "${CodeStarConnectionArn}",
-                    "SageMakerTrainingInstanceType": "${SageMakerTrainingInstanceType}",
-                    "SageMakerInferenceInstanceType": "${SageMakerInferenceInstanceType}",
-                    "ModelTrainingSchedule": "${ModelTrainingSchedule}",
-                    "NotificationEmail": "${NotificationEmail}"
-                  }
-                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-                RoleArn: !GetAtt CloudFormationRole.Arn
-              RunOrder: 1
-
-        # Stage 3: Test and Package
+        # Stage 2: Test and Package
         - Name: TestAndPackage
           Actions:
             - Name: TestAndPackage
@@ -518,7 +487,7 @@ Resources:
         # Stage 3: Deploy Infrastructure (Nested Stacks)
         - Name: DeployInfrastructure
           Actions:
-            - Name: DeployMainStack
+            - Name: CreateChangeSet
               ActionTypeId:
                 Category: Deploy
                 Owner: AWS
@@ -526,9 +495,11 @@ Resources:
                 Version: '1'
               InputArtifacts:
                 - Name: PackageArtifact
+                - Name: SourceArtifact
               Configuration:
-                ActionMode: CREATE_UPDATE
+                ActionMode: CHANGE_SET_REPLACE
                 StackName: !Sub '${ProjectName}-main'
+                ChangeSetName: !Sub '${ProjectName}-changeset'
                 TemplatePath: PackageArtifact::main.yaml
                 TemplateConfiguration: SourceArtifact::parameters.json
                 ParameterOverrides: !Sub |
@@ -544,6 +515,17 @@ Resources:
                 Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
                 RoleArn: !GetAtt CloudFormationRole.Arn
               RunOrder: 1
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub '${ProjectName}-main'
+                ChangeSetName: !Sub '${ProjectName}-changeset'
+              RunOrder: 2
 
         # Stage 6: Generate Training Data
         - Name: PrepareData
