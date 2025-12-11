@@ -105,18 +105,50 @@ Resources:
           from datetime import datetime
 
           s3 = boto3.client('s3')
+          codepipeline = boto3.client('codepipeline')
           URL = "http://mtg.upf.edu/static/datasets/last.fm/lastfm-dataset-1K.tar.gz"
           CHUNK_SIZE = 50000
 
 
           def handler(event, context):
-              bucket = os.environ['RAW_DATA_BUCKET']
-              chunk_size = event.get('chunk_size', CHUNK_SIZE)
+              job_id = None
+              user_parameters = {}
+              
               try:
-                  return stream_download(bucket, chunk_size)
-              except Exception:
-                  return sample_data(bucket, chunk_size)
+                  if 'CodePipeline.job' in event:
+                      job = event['CodePipeline.job']
+                      job_id = job['id']
 
+                      config_data = job.get('data', {}).get('actionConfiguration', {}).get('configuration', {})
+                      user_params = config_data.get('UserParameters', {})
+                      user_parameters = json.loads(user_params)
+                      print(f"CodePipeline job: {job_id}")
+
+                
+                  bucket = os.environ['RAW_DATA_BUCKET']
+                  chunk_size = user_parameters.get('chunk_size', CHUNK_SIZE)
+
+                  print(f"Starting data download to s3://{bucket}")
+                  result = stream_download(bucket, chunk_size)
+
+                  if job_id:
+                      codepipeline.put_job_success_result(jobId=job_id)
+                      print(f"CodePipeline job {job_id} completed successfully")
+              
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(result)
+                  }
+
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  if job_id:
+                      try:
+                          codepipeline.put_job_failure_result(jobId=job_id, failureDetails={'message': 'Failed to process job', 'type': 'JobFailed'})
+                          print(f"CodePipeline job {job_id} failed")
+                      except Exception as notify_error:
+                          print(f"Failed to update CodePipeline job {job_id}: {str(notify_error)}")
+                  raise
 
           def stream_download(bucket, chunk_size):
               tmp_file = '/tmp/lastfm.tar.gz'
