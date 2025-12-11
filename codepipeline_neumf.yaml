@@ -139,6 +139,9 @@ Resources:
                 - cd package && tar -czvf ../training-scripts.tar.gz . && cd ..
                 - aws s3 cp training-scripts.tar.gz s3://${S3_BUCKET}/training-scripts/
                 - aws s3 cp glue_etl_neumf.py s3://${S3_BUCKET}/scripts/
+                - echo "Packaging Lambda functions..."
+                - zip -j download_dataset.zip lambda/download_dataset.py
+                - aws s3 cp download_dataset.zip s3://${S3_BUCKET}/lambda/
             post_build:
               commands:
                 - echo "Build completed successfully"

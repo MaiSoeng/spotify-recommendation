@@ -222,7 +222,10 @@ Resources:
         - UseVpcConfig
         - !GetAtt NetworkingStack.Outputs.LambdaSecurityGroupId
         - ""
+        - !GetAtt NetworkingStack.Outputs.LambdaSecurityGroupId
+        - ""
         AlarmTopicArn: !Ref AlarmTopic
+        CodeBucket: !Ref PipelineBucket
 
   # ===============================
   # API Gateway
