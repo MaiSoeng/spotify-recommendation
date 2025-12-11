@@ -160,10 +160,17 @@ Resources:
           Statement:
           - Effect: Allow
             Action:
-            - kms:Encrypt
-            - kms:Decrypt
             - kms:GenerateDataKey*
             Resource: !Ref SecretsKMSKeyArn
+      - PolicyName: CodePipelineAccess
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - codepipeline:PutJobSuccessResult
+            - codepipeline:PutJobFailureResult
+            Resource: '*'
 
   # Glue job role
   GlueJobRole:
