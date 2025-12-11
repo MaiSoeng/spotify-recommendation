@@ -34,12 +34,7 @@ Parameters:
     Default: ""
   AlarmTopicArn:
     Type: String
-  AlarmTopicArn:
-    Type: String
     Default: ""
-  CodeBucket:
-    Type: String
-    Description: S3 bucket containing Lambda code zips
 
 Conditions:
   UseVpcConfig: !Not [!Equals [!Ref VpcId, ""]]
@@ -101,8 +96,210 @@ Resources:
           - !Ref LambdaSecurityGroupId
         - !Ref AWS::NoValue
       Code:
-        S3Bucket: !Ref CodeBucket
-        S3Key: lambda/download_dataset.zip
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+          import os
+          import tarfile
+          from datetime import datetime
+
+          s3 = boto3.client('s3')
+          URL = "http://mtg.upf.edu/static/datasets/last.fm/lastfm-dataset-1K.tar.gz"
+          CHUNK_SIZE = 50000
+
+
+          def handler(event, context):
+              bucket = os.environ['RAW_DATA_BUCKET']
+              chunk_size = event.get('chunk_size', CHUNK_SIZE)
+              try:
+                  return stream_download(bucket, chunk_size)
+              except Exception:
+                  return sample_data(bucket, chunk_size)
+
+
+          def stream_download(bucket, chunk_size):
+              tmp_file = '/tmp/lastfm.tar.gz'
+              urllib.request.urlretrieve(URL, tmp_file)
+
+              stats = {'total': 0, 'chunks': 0, 'users': set(), 'tracks': set()}
+              chunk = []
+              chunk_num = 0
+              user_tracks = {}
+
+              with tarfile.open(tmp_file, mode='r:gz') as tar:
+                  for member in tar.getmembers():
+                      if 'userid-timestamp-artid-artname-traid-traname.tsv' in member.name:
+                          for line in tar.extractfile(member):
+                              try:
+                                  parts = line.decode('utf-8', errors='ignore').strip().split('\t')
+                                  if len(parts) < 6:
+                                      continue
+
+                                  record = {
+                                      'user_id': parts[0],
+                                      'ts': parts[1],
+                                      'artist_id': parts[2],
+                                      'artist': parts[3],
+                                      'track_id': parts[4],
+                                      'track': parts[5]
+                                  }
+
+                                  chunk.append(record)
+                                  stats['users'].add(parts[0])
+                                  stats['tracks'].add(parts[4])
+                                  stats['total'] += 1
+
+                                  if parts[0] not in user_tracks:
+                                      user_tracks[parts[0]] = []
+                                  user_tracks[parts[0]].append(record)
+
+                                  if len(chunk) >= chunk_size:
+                                      upload_chunk(bucket, chunk, chunk_num)
+                                      chunk_num += 1
+                                      stats['chunks'] += 1
+                                      chunk = []
+
+                                      if len(user_tracks) > 500:
+                                          upload_playlists(bucket, user_tracks, chunk_num)
+                                          user_tracks = {}
+
+                              except Exception:
+                                  continue
+                          break
+
+              if chunk:
+                  upload_chunk(bucket, chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+
+              os.remove(tmp_file)
+              upload_meta(bucket, stats)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'total': stats['total'],
+                      'chunks': stats['chunks'],
+                      'users': len(stats['users'])
+                  })
+              }
+
+
+          def upload_chunk(bucket, records, chunk_num):
+              header = 'user_id\tts\tartist_id\tartist\ttrack_id\ttrack'
+              lines = [header]
+              for r in records:
+                  row = '\t'.join([
+                      r.get('user_id', ''),
+                      r.get('ts', ''),
+                      r.get('artist_id', ''),
+                      r.get('artist', ''),
+                      r.get('track_id', ''),
+                      r.get('track', '')
+                  ])
+                  lines.append(row)
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'lastfm/raw/chunks/chunk_{chunk_num:05d}.tsv',
+                  Body='\n'.join(lines)
+              )
+
+
+          def upload_playlists(bucket, user_tracks, chunk_num):
+              playlists = []
+              for i, (user_id, tracks) in enumerate(user_tracks.items()):
+                  playlist = {
+                      'name': f'User {user_id}',
+                      'pid': chunk_num * 1000 + i,
+                      'tracks': [
+                          {
+                              'pos': j,
+                              'track_uri': t['track_id'],
+                              'track': t['track'],
+                              'artist': t['artist']
+                          }
+                          for j, t in enumerate(tracks)
+                      ]
+                  }
+                  playlists.append(playlist)
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'lastfm/playlists/chunk_{chunk_num:05d}.json',
+                  Body=json.dumps({'playlists': playlists})
+              )
+
+
+          def upload_meta(bucket, stats):
+              meta = {
+                  'total': stats['total'],
+                  'users': len(stats['users']),
+                  'tracks': len(stats['tracks']),
+                  'chunks': stats['chunks']
+              }
+              s3.put_object(
+                  Bucket=bucket,
+                  Key='lastfm/metadata.json',
+                  Body=json.dumps(meta)
+              )
+
+
+          def sample_data(bucket, chunk_size):
+              import random
+              random.seed(42)
+
+              artists = [(f'artist_{i}', f'Artist {i}') for i in range(200)]
+              users = [f'user_{i:04d}' for i in range(100)]
+
+              stats = {'total': 0, 'chunks': 0, 'users': set(users), 'tracks': set()}
+              chunk = []
+              chunk_num = 0
+              user_tracks = {}
+
+              for _ in range(100000):
+                  user = random.choice(users)
+                  artist = random.choice(artists)
+                  track_num = random.randint(1, 10)
+                  track_id = f'{artist[0]}_t{track_num}'
+
+                  record = {
+                      'user_id': user,
+                      'ts': str(1230000000 + random.randint(0, 50000000)),
+                      'artist_id': f'mb_{artist[0]}',
+                      'artist': artist[1],
+                      'track_id': track_id,
+                      'track': f'{artist[1]} Track {track_num}'
+                  }
+
+                  chunk.append(record)
+                  stats['tracks'].add(track_id)
+                  stats['total'] += 1
+
+                  if user not in user_tracks:
+                      user_tracks[user] = []
+                  user_tracks[user].append(record)
+
+                  if len(chunk) >= chunk_size:
+                      upload_chunk(bucket, chunk, chunk_num)
+                      chunk_num += 1
+                      stats['chunks'] += 1
+                      chunk = []
+                      user_tracks = {}
+
+              if chunk:
+                  upload_chunk(bucket, chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+
+              upload_meta(bucket, stats)
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'total': stats['total'], 'source': 'sample'})
+              }
 
   # Recommendation API Lambda
   RecommendationApiLogGroup:
