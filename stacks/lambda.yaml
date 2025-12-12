@@ -82,9 +82,9 @@ Resources:
       Handler: index.handler
       Role: !Ref LambdaExecutionRoleArn
       Timeout: 900
-      MemorySize: 1024
+      MemorySize: 3072
       EphemeralStorage:
-        Size: 1024
+        Size: 2048
       Environment:
         Variables:
           RAW_DATA_BUCKET: !Ref RawDataBucket
@@ -151,7 +151,10 @@ Resources:
               tmp_file = '/tmp/lastfm.tar.gz'
               urllib.request.urlretrieve(URL, tmp_file)
 
-              stats = {'total': 0, 'chunks': 0, 'users': set(), 'tracks': set()}
+              # Use counters instead of Sets to avoid OOM with millions of records
+              stats = {'total': 0, 'chunks': 0, 'users': 0, 'tracks': 0}
+              seen_users = set()
+              seen_tracks = set()
               chunk = []
               chunk_num = 0
               user_tracks = {}
@@ -175,8 +178,13 @@ Resources:
                                   }
 
                                   chunk.append(record)
-                                  stats['users'].add(parts[0])
-                                  stats['tracks'].add(parts[4])
+                                  # Count unique users/tracks but clear periodically to save memory
+                                  if parts[0] not in seen_users:
+                                      seen_users.add(parts[0])
+                                      stats['users'] += 1
+                                  if parts[4] not in seen_tracks:
+                                      seen_tracks.add(parts[4])
+                                      stats['tracks'] += 1
                                   stats['total'] += 1
 
                                   if parts[0] not in user_tracks:
@@ -188,6 +196,11 @@ Resources:
                                       chunk_num += 1
                                       stats['chunks'] += 1
                                       chunk = []
+                                      # Clear tracking sets periodically to prevent OOM
+                                      if len(seen_users) > 100000:
+                                          seen_users.clear()
+                                      if len(seen_tracks) > 500000:
+                                          seen_tracks.clear()
 
                                       if len(user_tracks) > 500:
                                           upload_playlists(bucket, user_tracks, chunk_num)
@@ -211,7 +224,7 @@ Resources:
                   'body': json.dumps({
                       'total': stats['total'],
                       'chunks': stats['chunks'],
-                      'users': len(stats['users'])
+                      'users': stats['users']
                   })
               }
 

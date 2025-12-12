@@ -39,18 +39,20 @@ logger = logging.getLogger(__name__)
 # ===============================
 
 class SpotifyPlaylistDataset(Dataset):
-    """Dataset for Spotify playlist interactions"""
+    """Dataset for Spotify playlist interactions with weighted ratings"""
     
-    def __init__(self, interactions, num_items, num_negatives=4):
+    def __init__(self, interactions, num_items, num_negatives=4, rating_lookup=None):
         """
         Args:
             interactions: List of (user_idx, item_idx) positive pairs
             num_items: Total number of items for negative sampling
             num_negatives: Number of negative samples per positive
+            rating_lookup: Dict of (user_idx, item_idx) -> rating (optional)
         """
         self.interactions = interactions
         self.num_items = num_items
         self.num_negatives = num_negatives
+        self.rating_lookup = rating_lookup or {}
         
         # Build user->items mapping for negative sampling
         self.user_items = defaultdict(set)
@@ -61,14 +63,15 @@ class SpotifyPlaylistDataset(Dataset):
         self.samples = self._generate_samples()
     
     def _generate_samples(self):
-        """Generate positive and negative samples"""
+        """Generate positive and negative samples with ratings"""
         samples = []
         
         for user_idx, item_idx in self.interactions:
-            # Positive sample
-            samples.append((user_idx, item_idx, 1.0))
+            # Positive sample - use actual rating if available, else 1.0
+            rating = self.rating_lookup.get((user_idx, item_idx), 1.0)
+            samples.append((user_idx, item_idx, rating))
             
-            # Negative samples
+            # Negative samples - always 0.0
             for _ in range(self.num_negatives):
                 neg_item = np.random.randint(0, self.num_items)
                 while neg_item in self.user_items[user_idx]:
@@ -296,23 +299,65 @@ def generate_sample_data(n_users=5000, n_items=10000, n_interactions=100000):
 
 
 def prepare_data(df, test_ratio=0.2):
-    """Prepare data for training and evaluation"""
+    """
+    Prepare data for training and evaluation.
+    
+    Key improvement: Aggregates repeated interactions into play counts,
+    then converts to implicit ratings using log transform.
+    This preserves the signal from users who play a song multiple times.
+    """
     logger.info("Preparing data for training...")
     
-    # Create user and item encodings
+    # Determine column names
     if 'playlist_id' in df.columns:
         user_col = 'playlist_id'
+    elif 'user_idx' in df.columns:
+        user_col = 'user_idx'
     else:
         user_col = df.columns[0]
     
     if 'track_uri' in df.columns:
         item_col = 'track_uri'
+    elif 'item_idx' in df.columns:
+        item_col = 'item_idx'
     else:
         item_col = df.columns[1]
     
-    # Encode users and items
-    unique_users = df[user_col].unique()
-    unique_items = df[item_col].unique()
+    logger.info(f"Using columns: user={user_col}, item={item_col}")
+    
+    # ===============================
+    # Step 1: Aggregate Interactions
+    # ===============================
+    # Count how many times each user interacted with each item
+    interaction_counts = df.groupby([user_col, item_col]).size().reset_index(name='play_count')
+    
+    logger.info(f"Raw interactions: {len(df)}")
+    logger.info(f"After aggregation: {len(interaction_counts)} unique user-item pairs")
+    logger.info(f"Compression ratio: {len(df)/len(interaction_counts):.2f}x")
+    
+    # Play count statistics
+    logger.info(f"Play count stats: mean={interaction_counts['play_count'].mean():.2f}, "
+                f"max={interaction_counts['play_count'].max()}, "
+                f"median={interaction_counts['play_count'].median():.0f}")
+    
+    # ===============================
+    # Step 2: Compute Implicit Ratings
+    # ===============================
+    # Use log transform: rating = log(1 + play_count)
+    # This prevents power users from dominating the signal
+    interaction_counts['rating'] = np.log1p(interaction_counts['play_count'])
+    
+    # Normalize to 0-1 range for training stability
+    max_rating = interaction_counts['rating'].max()
+    interaction_counts['normalized_rating'] = interaction_counts['rating'] / max_rating
+    
+    logger.info(f"Rating range: 0.0 to 1.0 (normalized from log scale)")
+    
+    # ===============================
+    # Step 3: Create Encodings
+    # ===============================
+    unique_users = interaction_counts[user_col].unique()
+    unique_items = interaction_counts[item_col].unique()
     
     user_to_idx = {u: i for i, u in enumerate(unique_users)}
     item_to_idx = {t: i for i, t in enumerate(unique_items)}
@@ -323,22 +368,33 @@ def prepare_data(df, test_ratio=0.2):
     
     logger.info(f"Unique users: {num_users}, Unique items: {num_items}")
     
-    # Create interaction pairs
-    interactions = [
-        (user_to_idx[row[user_col]], item_to_idx[row[item_col]])
-        for _, row in df.iterrows()
+    # Add encoded indices
+    interaction_counts['user_idx'] = interaction_counts[user_col].map(user_to_idx)
+    interaction_counts['item_idx'] = interaction_counts[item_col].map(item_to_idx)
+    
+    # ===============================
+    # Step 4: Create Train/Test Split
+    # ===============================
+    # Create interaction tuples with ratings
+    interactions_with_ratings = [
+        (row['user_idx'], row['item_idx'], row['normalized_rating'])
+        for _, row in interaction_counts.iterrows()
     ]
     
-    # Remove duplicates
-    interactions = list(set(interactions))
-    logger.info(f"Unique interactions: {len(interactions)}")
-    
     # Split into train/test
-    train_interactions, test_interactions = train_test_split(
-        interactions,
+    from sklearn.model_selection import train_test_split
+    train_data, test_data = train_test_split(
+        interactions_with_ratings,
         test_size=test_ratio,
         random_state=42
     )
+    
+    # Extract just (user, item) pairs for compatibility with existing code
+    train_interactions = [(u, i) for u, i, r in train_data]
+    test_interactions = [(u, i) for u, i, r in test_data]
+    
+    # Build rating lookup for weighted training
+    rating_lookup = {(u, i): r for u, i, r in interactions_with_ratings}
     
     logger.info(f"Train: {len(train_interactions)}, Test: {len(test_interactions)}")
     
@@ -355,7 +411,8 @@ def prepare_data(df, test_ratio=0.2):
         'user_to_idx': user_to_idx,
         'item_to_idx': item_to_idx,
         'idx_to_item': idx_to_item,
-        'train_user_items': train_user_items
+        'train_user_items': train_user_items,
+        'rating_lookup': rating_lookup  # NEW: for weighted training
     }
 
 
@@ -432,7 +489,8 @@ def train_model(args, data_dict):
     train_dataset = SpotifyPlaylistDataset(
         data_dict['train_interactions'],
         data_dict['num_items'],
-        num_negatives=args.num_negatives
+        num_negatives=args.num_negatives,
+        rating_lookup=data_dict.get('rating_lookup')  # Use weighted ratings
     )
     
     eval_dataset = EvaluationDataset(
