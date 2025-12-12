@@ -89,12 +89,9 @@ Resources:
         Variables:
           RAW_DATA_BUCKET: !Ref RawDataBucket
           PROCESSED_DATA_BUCKET: !Ref ProcessedDataBucket
-      VpcConfig: !If
-        - UseVpcConfig
-        - SubnetIds: !Ref SubnetIds
-          SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-        - !Ref AWS::NoValue
+      # NOTE: No VpcConfig - this Lambda needs public internet access for:
+      # 1. Downloading external dataset from mtg.upf.edu
+      # 2. Calling CodePipeline API (put_job_success_result)
       Code:
         ZipFile: |
           import json
