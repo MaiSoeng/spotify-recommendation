@@ -139,6 +139,7 @@ Resources:
                 - cd package && tar -czvf ../training-scripts.tar.gz . && cd ..
                 - aws s3 cp training-scripts.tar.gz s3://${S3_BUCKET}/training-scripts/
                 - aws s3 cp glue_etl_neumf.py s3://${S3_BUCKET}/scripts/
+                - aws s3 cp glue_download_dataset.py s3://${S3_BUCKET}/scripts/
             post_build:
               commands:
                 - echo "Build completed successfully"
@@ -149,6 +150,76 @@ Resources:
             paths:
               - '/root/.cache/pip/**/*'
       TimeoutInMinutes: 30
+
+  # Build project for triggering Glue download job
+  DataDownloadBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-data-download'
+      Description: Trigger Glue Python Shell Job to download dataset
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+          - Name: GLUE_JOB_NAME
+            Value: !Sub '${ProjectName}-download-dataset'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.11
+              commands:
+                - pip install boto3
+            build:
+              commands:
+                - echo "Triggering Glue Download Job..."
+                - |
+                  python << 'EOF'
+                  import boto3
+                  import os
+                  import time
+                  
+                  glue = boto3.client('glue')
+                  job_name = os.environ['GLUE_JOB_NAME']
+                  
+                  print(f"Starting Glue job: {job_name}")
+                  
+                  # Start the Glue job
+                  response = glue.start_job_run(JobName=job_name)
+                  run_id = response['JobRunId']
+                  print(f"Job run started: {run_id}")
+                  
+                  # Wait for job to complete
+                  print("Waiting for Glue job to complete...")
+                  while True:
+                      status = glue.get_job_run(JobName=job_name, RunId=run_id)
+                      state = status['JobRun']['JobRunState']
+                      print(f"Status: {state}")
+                      
+                      if state in ['SUCCEEDED']:
+                          print("Glue job completed successfully!")
+                          break
+                      elif state in ['FAILED', 'STOPPED', 'TIMEOUT', 'ERROR']:
+                          error_msg = status['JobRun'].get('ErrorMessage', 'Unknown error')
+                          raise Exception(f"Glue job failed: {error_msg}")
+                      
+                      time.sleep(30)
+                  
+                  print("Dataset download complete!")
+                  EOF
+            post_build:
+              commands:
+                - echo "Data download stage completed"
+      TimeoutInMinutes: 180  # 3 hours max (Glue job can run for 2 hours)
 
   # Build project for model training
   ModelTrainingBuild:

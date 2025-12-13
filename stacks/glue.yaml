@@ -109,6 +109,26 @@ Resources:
       ExecutionProperty:
         MaxConcurrentRuns: 1
 
+  # Python Shell Job for downloading Last.fm 1K dataset
+  GlueDownloadJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-download-dataset'
+      Description: Download Last.fm 1K dataset using Python Shell (16GB memory, 2hr timeout)
+      Role: !Ref GlueJobRoleArn
+      GlueVersion: '3.0'
+      Command:
+        Name: pythonshell
+        ScriptLocation: !Sub 's3://${GlueScriptsBucket}/scripts/glue_download_dataset.py'
+        PythonVersion: '3.9'
+      MaxCapacity: 1.0  # 1 DPU = 16GB memory
+      Timeout: 120  # 2 hours max
+      DefaultArguments:
+        '--raw_data_bucket': !Ref RawDataBucket
+        '--additional-python-modules': 'boto3,urllib3'
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+
   GlueJobAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: HasAlarmTopic
