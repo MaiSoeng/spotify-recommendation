@@ -610,15 +610,16 @@ Resources:
               Configuration:
                 NotificationArn: !Ref PipelineNotificationTopic
                 CustomData: "Approve to generate training data using Lambda function"
-            - Name: GenerateData
+            - Name: DownloadData
               ActionTypeId:
-                Category: Invoke
+                Category: Build
                 Owner: AWS
-                Provider: Lambda
+                Provider: CodeBuild
                 Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
               Configuration:
-                FunctionName: !Sub '${ProjectName}-download-dataset'
-                UserParameters: '{"dataset_type": "synthetic", "num_playlists": 10000}'
+                ProjectName: !Ref DataDownloadBuild
               RunOrder: 2
 
         # Stage 7: Train Model

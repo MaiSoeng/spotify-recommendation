@@ -133,7 +133,8 @@ try:
     # Try Last.fm TSV format
     try:
         logger.info("Trying Last.fm TSV format...")
-        tsv_path = f"s3://{args['raw_data_bucket']}/lastfm/raw/interactions.tsv"
+        # Point to directory containing chunks
+        tsv_path = f"s3://{args['raw_data_bucket']}/lastfm/raw/chunks/"
         
         interactions_df = spark.read.csv(
             tsv_path,
@@ -167,7 +168,8 @@ try:
         # Try Last.fm JSON (playlist format)
         try:
             logger.info("Trying Last.fm JSON playlist format...")
-            json_path = f"s3://{args['raw_data_bucket']}/lastfm/playlists.json"
+            # Point to directory containing chunks
+            json_path = f"s3://{args['raw_data_bucket']}/lastfm/playlists/"
             
             raw_df = spark.read.json(json_path, multiLine=True)
             
