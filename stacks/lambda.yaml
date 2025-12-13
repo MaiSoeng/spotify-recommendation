@@ -82,9 +82,9 @@ Resources:
       Handler: index.handler
       Role: !Ref LambdaExecutionRoleArn
       Timeout: 900
-      MemorySize: 3072
+      MemorySize: 10240
       EphemeralStorage:
-        Size: 2048
+        Size: 5120
       Environment:
         Variables:
           RAW_DATA_BUCKET: !Ref RawDataBucket
