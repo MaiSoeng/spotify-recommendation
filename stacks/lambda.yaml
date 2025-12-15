@@ -48,7 +48,247 @@ Resources:
       Name: !Sub '${ProjectName}-listenbrainz-token'
       SecretString: !Sub '{"token": "${ListenBrainzToken}"}'
 
-  # Lambda for downloading Last.fm dataset
+  # Recommendation API Lambda
+  RecommendationApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-recommendation-api'
+      RetentionInDays: 30
+
+  RecommendationApiErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-recommendation-api-errors'
+      AlarmDescription: Alarm if lambda errors > 0
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref RecommendationApiLambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
+  RecommendationApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-recommendation-api'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          RECOMMENDATION_CACHE_TABLE: !Ref RecommendationCacheTable
+          TRACK_METADATA_TABLE: !Ref TrackMetadataTable
+          SAGEMAKER_ENDPOINT: !Sub '${ProjectName}-neumf-endpoint'
+      VpcConfig: !If
+        - UseVpcConfig
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        - !Ref AWS::NoValue
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import time
+          from decimal import Decimal
+
+          dynamodb = boto3.resource('dynamodb')
+          # sagemaker = boto3.client('sagemaker-runtime')
+
+          user_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          cache_table = dynamodb.Table(os.environ['RECOMMENDATION_CACHE_TABLE'])
+
+
+          def handler(event, context):
+              # Parse request body
+              if event.get('body'):
+                  body = json.loads(event['body'])
+              else:
+                  body = event
+
+              user_id = body.get('user_id')
+              top_n = body.get('top_n', 10)
+
+              if not user_id:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps({'error': 'user_id required'})
+                  }
+
+              try:
+                  # Check cache first
+                  cache_response = cache_table.get_item(Key={'user_id': user_id})
+                  if 'Item' in cache_response:
+                      cached = cache_response['Item']
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps({
+                              'user_id': user_id,
+                              'recommendations': cached.get('recommendations', [])
+                          })
+                      }
+
+                  # Get user features
+                  user_response = user_table.get_item(Key={'user_id': user_id})
+                  user = user_response.get('Item', {})
+
+                  # Get recommendations from model
+                  recommendations = get_recommendations(user_id, user, top_n)
+
+                  # Cache the results
+                  cache_table.put_item(Item={
+                      'user_id': user_id,
+                      'recommendations': recommendations,
+                      'ttl': int(time.time()) + 3600
+                  })
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'user_id': user_id,
+                          'recommendations': recommendations
+                      })
+                  }
+
+              except Exception as ex:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(ex)})
+                  }
+
+
+          def get_recommendations(user_id, user, top_n):
+              try:
+                  # Placeholder for SafeMaker runtime invocation
+                  # response = sagemaker.invoke_endpoint(...) 
+                  # For now, return random/popular recommendations
+                  return [
+                      {'track_id': f'popular_track_{i}', 'score': float(1 - i * 0.1)}
+                      for i in range(top_n)
+                  ]
+              except Exception:
+                  return []
+
+  # Realtime feature update Lambda
+  RealtimeFeatureUpdateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-realtime-feature-update'
+      RetentionInDays: 30
+
+  RealtimeFeatureUpdateErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmTopic
+    Properties:
+      AlarmName: !Sub '${ProjectName}-realtime-feature-update-errors'
+      AlarmDescription: Alarm if lambda errors > 0
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value: !Ref RealtimeFeatureUpdateLambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+      - !Ref AlarmTopicArn
+
+  RealtimeFeatureUpdateLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-realtime-feature-update'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          TRACK_METADATA_TABLE: !Ref TrackMetadataTable
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import base64
+          import time
+          from decimal import Decimal
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          user_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          track_table = dynamodb.Table(os.environ['TRACK_METADATA_TABLE'])
+
+
+          def handler(event, context):
+              processed = 0
+              for record in event.get('Records', []):
+                  try:
+                      payload = base64.b64decode(record['kinesis']['data'])
+                      data = json.loads(payload.decode('utf-8'))
+                      update_features(data)
+                      processed += 1
+                  except Exception:
+                      continue
+
+              return {'processed': processed}
+
+
+          def update_features(data):
+              user_id = data.get('user_id') or data.get('user_name')
+              track_id = data.get('track_id') or data.get('recording_msid')
+
+              if not user_id or not track_id:
+                  return
+
+              listened_at = data.get('listened_at', datetime.now().isoformat())
+              now = datetime.now().isoformat()
+              ttl = int(time.time()) + 86400 * 30
+
+              user_table.update_item(
+                  Key={'user_id': user_id},
+                  UpdateExpression='''
+                      SET last_track = :track,
+                      last_listened = :listened,
+                      updated_at = :updated,
+                      listen_count = if_not_exists(listen_count, :zero) + :one,
+                      ttl = :ttl
+                  ''',
+                  ExpressionAttributeValues={
+                      ':track': track_id,
+                      ':listened': listened_at,
+                      ':updated': now,
+                      ':zero': Decimal(0),
+                      ':one': Decimal(1),
+                      ':ttl': ttl
+                  }
+              )
+
+  # Kinesis trigger for realtime Lambda
+  KinesisEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref RealtimeFeatureUpdateLambda
+      EventSourceArn: !Ref UserEventsStreamArn
+      StartingPosition: LATEST
+      BatchSize: 100
+
 Outputs:
+  RecommendationApiLambdaArn:
+    Value: !GetAtt RecommendationApiLambda.Arn
   ListenBrainzSecretArn:
     Value: !Ref ListenBrainzSecret
