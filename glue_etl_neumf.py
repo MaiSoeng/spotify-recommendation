@@ -423,7 +423,10 @@ try:
     # Log final metrics
     logger.info("=" * 50)
     logger.info("ETL Job Summary:")
-    logger.info(f"  Total playlists processed: {playlists_df.count()}")
+    if 'playlists_df' in locals():
+        logger.info(f"  Total playlists processed: {playlists_df.count()}")
+    else:
+        logger.info(f"  Total records processed: {interactions_df.count()}")
     logger.info(f"  Total interactions: {total_interactions}")
     logger.info(f"  Valid interactions: {valid_count}")
     logger.info(f"  Unique users: {num_users}")
