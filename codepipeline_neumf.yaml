@@ -749,6 +749,11 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${ProjectName}-download-dataset'
+              - Effect: Allow
+                Action:
                   - sagemaker:CreateTrainingJob
                   - sagemaker:DescribeTrainingJob
                   - sagemaker:CreateModel
