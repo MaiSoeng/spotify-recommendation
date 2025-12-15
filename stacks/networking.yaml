@@ -170,13 +170,7 @@ Resources:
       - !Ref GlueSecurityGroup
       - !Ref LambdaSecurityGroup
       PrivateDnsEnabled: true
-      VpcId: !Ref VpcId
-      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.kinesis-streams'
-      VpcEndpointType: Interface
-      SubnetIds: !Ref SubnetIds
-      SecurityGroupIds:
-      - !Ref LambdaSecurityGroup
-      PrivateDnsEnabled: true
+
 
 Outputs:
   LambdaSecurityGroupId:
