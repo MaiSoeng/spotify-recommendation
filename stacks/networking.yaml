@@ -154,6 +154,28 @@ Resources:
       SubnetIds: !Ref SubnetIds
       SecurityGroupIds:
       - !Ref LambdaSecurityGroup
+      - !Ref GlueSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Interface endpoint for Secrets Manager
+  SecretsManagerVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref GlueSecurityGroup
+      - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.kinesis-streams'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+      - !Ref LambdaSecurityGroup
       PrivateDnsEnabled: true
 
 Outputs:

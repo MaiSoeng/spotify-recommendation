@@ -301,7 +301,7 @@ try:
     # Join encodings back to interactions
     encoded_df = valid_interactions_df \
         .join(unique_users, 'playlist_id', 'left') \
-        .join(unique_items, 'track_uri', 'left')
+        .join(unique_items.select('track_uri', 'item_idx'), 'track_uri', 'left')
     
     # ===============================
     # Compute Item Popularity
