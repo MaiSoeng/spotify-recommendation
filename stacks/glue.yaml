@@ -86,8 +86,8 @@ Resources:
       Description: ETL job for NeuMF training data
       Role: !Ref GlueJobRoleArn
       GlueVersion: '4.0'
-      WorkerType: G.1X
-      NumberOfWorkers: 2
+      WorkerType: G.2X
+      NumberOfWorkers: 16
       Timeout: 120
       Command:
         Name: glueetl

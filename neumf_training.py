@@ -765,13 +765,8 @@ if __name__ == '__main__':
     
     # Load data
     try:
-        # Try to find data file
+        # Load data directly (supports directory/partitioned parquet)
         data_path = args.train
-        if os.path.isdir(data_path):
-            files = os.listdir(data_path)
-            if files:
-                data_path = os.path.join(data_path, files[0])
-        
         df = load_spotify_data(data_path)
     except Exception as e:
         logger.warning(f"Could not load data from {args.train}: {e}")

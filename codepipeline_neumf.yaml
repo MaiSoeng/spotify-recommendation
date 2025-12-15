@@ -219,7 +219,85 @@ Resources:
             post_build:
               commands:
                 - echo "Data download stage completed"
+                - echo "Done" > output.txt
+          artifacts:
+            files:
+              - output.txt
       TimeoutInMinutes: 180  # 3 hours max (Glue job can run for 2 hours)
+
+  # Build project for triggering Glue ETL job
+  DataETLBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ProjectName}-data-etl'
+      Description: Trigger Glue ETL Job to process dataset
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        EnvironmentVariables:
+          - Name: PROJECT_NAME
+            Value: !Ref ProjectName
+          - Name: GLUE_JOB_NAME
+            Value: !Sub '${ProjectName}-neumf-etl'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.11
+              commands:
+                - pip install boto3
+            build:
+              commands:
+                - echo "Triggering Glue ETL Job..."
+                - |
+                  python << 'EOF'
+                  import boto3
+                  import os
+                  import time
+                  
+                  glue = boto3.client('glue')
+                  job_name = os.environ['GLUE_JOB_NAME']
+                  
+                  print(f"Starting Glue job: {job_name}")
+                  
+                  # Start the Glue job
+                  response = glue.start_job_run(JobName=job_name)
+                  run_id = response['JobRunId']
+                  print(f"Job run started: {run_id}")
+                  
+                  # Wait for job to complete
+                  print("Waiting for Glue job to complete...")
+                  while True:
+                      status = glue.get_job_run(JobName=job_name, RunId=run_id)
+                      state = status['JobRun']['JobRunState']
+                      print(f"Status: {state}")
+                      
+                      if state in ['SUCCEEDED']:
+                          print("Glue job completed successfully!")
+                          break
+                      elif state in ['FAILED', 'STOPPED', 'TIMEOUT', 'ERROR']:
+                          error_msg = status['JobRun'].get('ErrorMessage', 'Unknown error')
+                          raise Exception(f"Glue job failed: {error_msg}")
+                      
+                      time.sleep(30)
+                  
+                  print("ETL job complete!")
+                  EOF
+            post_build:
+              commands:
+                - echo "Data ETL stage completed"
+                - echo "Done" > output.txt
+          artifacts:
+            files:
+              - output.txt
+      TimeoutInMinutes: 180
 
   # Build project for model training
   ModelTrainingBuild:
@@ -621,6 +699,17 @@ Resources:
               Configuration:
                 ProjectName: !Ref DataDownloadBuild
               RunOrder: 2
+            - Name: RunETL
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref DataETLBuild
+              RunOrder: 3
 
         # Stage 7: Train Model
         - Name: TrainModel
@@ -754,6 +843,11 @@ Resources:
                 Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${ProjectName}-download-dataset'
               - Effect: Allow
                 Action:
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                Resource: !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${ProjectName}-neumf-etl'
+              - Effect: Allow
+                Action:
                   - sagemaker:CreateTrainingJob
                   - sagemaker:DescribeTrainingJob
                   - sagemaker:CreateModel
@@ -803,6 +897,7 @@ Resources:
                 Resource:
                   - !GetAtt TestAndPackageBuild.Arn
                   - !GetAtt DataDownloadBuild.Arn
+                  - !GetAtt DataETLBuild.Arn
                   - !GetAtt ModelTrainingBuild.Arn
                   - !GetAtt ModelDeploymentBuild.Arn
               - Effect: Allow

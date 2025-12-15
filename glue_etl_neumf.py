@@ -350,7 +350,8 @@ try:
         f.col('playlist_id'),
         f.col('track_uri'),
         f.col('track_name'),
-        f.col('artist_name')
+        f.col('artist_name'),
+        (f.col('user_idx').cast('int') % 20).alias('part_id')
     )
     
     test_output = test_df.select(
@@ -360,7 +361,8 @@ try:
         f.col('playlist_id'),
         f.col('track_uri'),
         f.col('track_name'),
-        f.col('artist_name')
+        f.col('artist_name'),
+        (f.col('user_idx').cast('int') % 20).alias('part_id')
     )
     
     # ===============================
@@ -374,6 +376,7 @@ try:
     
     train_output.write \
         .mode('overwrite') \
+        .partitionBy('part_id') \
         .parquet(train_path)
     
     # Write test data
@@ -382,6 +385,7 @@ try:
     
     test_output.write \
         .mode('overwrite') \
+        .partitionBy('part_id') \
         .parquet(test_path)
     
     # Write user encodings
