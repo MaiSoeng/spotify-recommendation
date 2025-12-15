@@ -299,12 +299,7 @@ def upload_metadata(stats):
     
     logger.info(f"Metadata uploaded: {json.dumps(metadata)}")
     return metadata
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps({'playlists': playlists}),
-        ContentType='application/json'
-    )
-    logger.info(f'Uploaded {key} ({len(playlists)} playlists)')
+
 
 
 
