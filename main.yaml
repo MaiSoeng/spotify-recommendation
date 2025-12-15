@@ -283,6 +283,12 @@ Outputs:
   RawDataBucket:
     Condition: HasNestedStacks
     Value: !GetAtt StorageStack.Outputs.RawDataBucketName
+  ProcessedDataBucketName:
+    Condition: HasNestedStacks
+    Value: !GetAtt StorageStack.Outputs.ProcessedDataBucketName
+  ModelArtifactsBucketName:
+    Condition: HasNestedStacks
+    Value: !GetAtt StorageStack.Outputs.ModelArtifactsBucketName
   GlueETLJob:
     Condition: HasNestedStacks
     Value: !GetAtt GlueStack.Outputs.GlueETLJobName

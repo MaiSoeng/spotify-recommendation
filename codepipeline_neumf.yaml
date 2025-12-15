@@ -342,48 +342,53 @@ Resources:
                   import boto3
                   import os
                   import time
+                  import sys
+                  import traceback
                   from datetime import datetime
-                  
-                  sagemaker = boto3.client('sagemaker')
-                  
-                  project_name = os.environ['PROJECT_NAME']
-                  role_arn = os.environ['SAGEMAKER_ROLE']
-                  instance_type = os.environ['TRAINING_INSTANCE_TYPE']
-                  region = os.environ['REGION']
-                  account_id = boto3.client('sts').get_caller_identity()['Account']
-                  
-                  job_name = f"{project_name}-training-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                  
-                  # Get bucket names from CloudFormation exports
-                  cf = boto3.client('cloudformation')
-                  
+
                   try:
-                      processed_bucket = cf.describe_stacks(
-                          StackName=f'{project_name}'
-                      )['Stacks'][0]['Outputs']
-                      processed_bucket = next(
-                          o['OutputValue'] for o in processed_bucket 
-                          if o['OutputKey'] == 'ProcessedDataBucketName'
-                      )
-                  except:
-                      processed_bucket = f"{project_name}-processed-data-{account_id}"
-                  
-                  try:
-                      model_bucket = cf.describe_stacks(
-                          StackName=f'{project_name}'
-                      )['Stacks'][0]['Outputs']
-                      model_bucket = next(
-                          o['OutputValue'] for o in model_bucket 
-                          if o['OutputKey'] == 'ModelArtifactsBucketName'
-                      )
-                  except:
-                      model_bucket = f"{project_name}-model-artifacts-{account_id}"
-                  
-                  print(f"Starting training job: {job_name}")
-                  print(f"Training data: s3://{processed_bucket}/neumf-training-data/train/")
-                  print(f"Model output: s3://{model_bucket}/models/")
-                  
-                  try:
+                      sagemaker = boto3.client('sagemaker')
+                      
+                      print("Reading environment variables...")
+                      project_name = os.environ['PROJECT_NAME']
+                      role_arn = os.environ['SAGEMAKER_ROLE']
+                      instance_type = os.environ['TRAINING_INSTANCE_TYPE']
+                      region = os.environ['REGION']
+                      pipeline_bucket = os.environ['PIPELINE_BUCKET']
+                      account_id = boto3.client('sts').get_caller_identity()['Account']
+                      
+                      job_name = f"{project_name}-training-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                      
+                      # Get bucket names from CloudFormation exports
+                      cf = boto3.client('cloudformation')
+                      
+                      try:
+                          processed_bucket = cf.describe_stacks(
+                              StackName=f'{project_name}'
+                          )['Stacks'][0]['Outputs']
+                          processed_bucket = next(
+                              o['OutputValue'] for o in processed_bucket 
+                              if o['OutputKey'] == 'ProcessedDataBucketName'
+                          )
+                      except:
+                          processed_bucket = f"{project_name}-processed-data-{account_id}"
+                      
+                      try:
+                          model_bucket = cf.describe_stacks(
+                              StackName=f'{project_name}'
+                          )['Stacks'][0]['Outputs']
+                          model_bucket = next(
+                              o['OutputValue'] for o in model_bucket 
+                              if o['OutputKey'] == 'ModelArtifactsBucketName'
+                          )
+                      except:
+                          model_bucket = f"{project_name}-model-artifacts-{account_id}"
+                      
+                      print(f"Starting training job: {job_name}")
+                      print(f"Training data: s3://{processed_bucket}/neumf-training-data/train/")
+                      print(f"Model output: s3://{model_bucket}/models/")
+                      print(f"Training script: s3://{pipeline_bucket}/training-scripts/training-scripts.tar.gz")
+                      
                       # Create training job
                       response = sagemaker.create_training_job(
                           TrainingJobName=job_name,
@@ -423,42 +428,45 @@ Resources:
                               'mlp-embedding-dim': '32',
                               'mlp-layers': '128,64,32',
                               'sagemaker_program': 'neumf_training.py',
-                              'sagemaker_submit_directory': f"s3://{os.environ['PIPELINE_BUCKET']}/training-scripts/training-scripts.tar.gz"
+                              'sagemaker_submit_directory': f"s3://{pipeline_bucket}/training-scripts/training-scripts.tar.gz"
                           },
                           EnableManagedSpotTraining=True,  # Use spot instances for cost savings
                           Tags=[
                               {'Key': 'Project', 'Value': project_name}
                           ]
                       )
+                      
+                      print(f"Training job started: {response['TrainingJobArn']}")
+                      
+                      # Save job name for next stage
+                      with open('training_job_name.txt', 'w') as f:
+                          f.write(job_name)
+                      
+                      # Wait for training to complete (with timeout)
+                      print("Waiting for training to complete...")
+                      waiter = sagemaker.get_waiter('training_job_completed_or_stopped')
+                      waiter.wait(
+                          TrainingJobName=job_name,
+                          WaiterConfig={'Delay': 60, 'MaxAttempts': 120}  # Up to 2 hours
+                      )
+                      
+                      # Check final status
+                      status = sagemaker.describe_training_job(TrainingJobName=job_name)
+                      print(f"Training completed with status: {status['TrainingJobStatus']}")
+                      
+                      if status['TrainingJobStatus'] != 'Completed':
+                          raise Exception(f"Training failed: {status.get('FailureReason', 'Unknown')}")
+                      
+                      print(f"Model artifacts: {status['ModelArtifacts']['S3ModelArtifacts']}")
+
                   except Exception as e:
-                      print(f"Failed to create training job: {str(e)}")
-                      import traceback
+                      print("CRITICAL ERROR IN SCRIPT:")
+                      print(str(e))
                       traceback.print_exc()
-                      raise e
-                  
-                  print(f"Training job started: {response['TrainingJobArn']}")
-                  
-                  # Save job name for next stage
-                  with open('training_job_name.txt', 'w') as f:
-                      f.write(job_name)
-                  
-                  # Wait for training to complete (with timeout)
-                  print("Waiting for training to complete...")
-                  waiter = sagemaker.get_waiter('training_job_completed_or_stopped')
-                  waiter.wait(
-                      TrainingJobName=job_name,
-                      WaiterConfig={'Delay': 60, 'MaxAttempts': 120}  # Up to 2 hours
-                  )
-                  
-                  # Check final status
-                  status = sagemaker.describe_training_job(TrainingJobName=job_name)
-                  print(f"Training completed with status: {status['TrainingJobStatus']}")
-                  
-                  if status['TrainingJobStatus'] != 'Completed':
-                      raise Exception(f"Training failed: {status.get('FailureReason', 'Unknown')}")
-                  
-                  print(f"Model artifacts: {status['ModelArtifacts']['S3ModelArtifacts']}")
+                      sys.exit(1)
                   EOF
+                  
+
           artifacts:
             files:
               - training_job_name.txt

@@ -339,6 +339,10 @@ Outputs:
     Value: !GetAtt ModelArtifactsBucket.Arn
     Export:
       Name: !Sub '${ProjectName}-ModelArtifactsBucketArn'
+  ModelArtifactsBucketName:
+    Value: !Ref ModelArtifactsBucket
+    Export:
+      Name: !Sub '${ProjectName}-ModelArtifactsBucket'
   GlueScriptsBucketArn:
     Value: !GetAtt GlueScriptsBucket.Arn
     Export:
