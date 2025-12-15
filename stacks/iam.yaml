@@ -311,6 +311,8 @@ Resources:
             - !Sub '${ProcessedDataBucketArn}/*'
             - !Ref ModelArtifactsBucketArn
             - !Sub '${ModelArtifactsBucketArn}/*'
+            - !Ref PipelineBucketArn
+            - !Sub '${PipelineBucketArn}/*'
 
 Outputs:
   FirehoseDeliveryRoleArn:

@@ -321,6 +321,8 @@ Resources:
             Value: !Ref SageMakerTrainingInstanceType
           - Name: REGION
             Value: !Ref AWS::Region
+          - Name: PIPELINE_BUCKET
+            Value: !Ref PipelineArtifactBucket
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -334,6 +336,7 @@ Resources:
             build:
               commands:
                 - echo "Starting SageMaker training job..."
+                - echo "FAILED_JOB" > training_job_name.txt
                 - |
                   python << 'EOF'
                   import boto3
@@ -380,52 +383,58 @@ Resources:
                   print(f"Training data: s3://{processed_bucket}/neumf-training-data/train/")
                   print(f"Model output: s3://{model_bucket}/models/")
                   
-                  # Create training job
-                  response = sagemaker.create_training_job(
-                      TrainingJobName=job_name,
-                      RoleArn=role_arn,
-                      AlgorithmSpecification={
-                          'TrainingImage': f'763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:2.0.1-cpu-py310',
-                          'TrainingInputMode': 'File'
-                      },
-                      InputDataConfig=[
-                          {
-                              'ChannelName': 'train',
-                              'DataSource': {
-                                  'S3DataSource': {
-                                      'S3DataType': 'S3Prefix',
-                                      'S3Uri': f's3://{processed_bucket}/neumf-training-data/train/',
-                                      'S3DataDistributionType': 'FullyReplicated'
+                  try:
+                      # Create training job
+                      response = sagemaker.create_training_job(
+                          TrainingJobName=job_name,
+                          RoleArn=role_arn,
+                          AlgorithmSpecification={
+                              'TrainingImage': f'763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:2.0.1-cpu-py310',
+                              'TrainingInputMode': 'File'
+                          },
+                          InputDataConfig=[
+                              {
+                                  'ChannelName': 'train',
+                                  'DataSource': {
+                                      'S3DataSource': {
+                                          'S3DataType': 'S3Prefix',
+                                          'S3Uri': f's3://{processed_bucket}/neumf-training-data/train/',
+                                          'S3DataDistributionType': 'FullyReplicated'
+                                      }
                                   }
                               }
-                          }
-                      ],
-                      OutputDataConfig={
-                          'S3OutputPath': f's3://{model_bucket}/models/'
-                      },
-                      ResourceConfig={
-                          'InstanceType': instance_type,
-                          'InstanceCount': 1,
-                          'VolumeSizeInGB': 50
-                      },
-                      StoppingCondition={
-                          'MaxRuntimeInSeconds': 7200  # 2 hours max
-                      },
-                      HyperParameters={
-                          'epochs': '20',
-                          'batch-size': '256',
-                          'learning-rate': '0.001',
-                          'gmf-embedding-dim': '32',
-                          'mlp-embedding-dim': '32',
-                          'mlp-layers': '128,64,32',
-                          'sagemaker_program': 'neumf_training.py',
-                          'sagemaker_submit_directory': f's3://{model_bucket}/training-scripts/training-scripts.tar.gz'
-                      },
-                      EnableManagedSpotTraining=True,  # Use spot instances for cost savings
-                      Tags=[
-                          {'Key': 'Project', 'Value': project_name}
-                      ]
-                  )
+                          ],
+                          OutputDataConfig={
+                              'S3OutputPath': f's3://{model_bucket}/models/'
+                          },
+                          ResourceConfig={
+                              'InstanceType': instance_type,
+                              'InstanceCount': 1,
+                              'VolumeSizeInGB': 50
+                          },
+                          StoppingCondition={
+                              'MaxRuntimeInSeconds': 7200  # 2 hours max
+                          },
+                          HyperParameters={
+                              'epochs': '20',
+                              'batch-size': '256',
+                              'learning-rate': '0.001',
+                              'gmf-embedding-dim': '32',
+                              'mlp-embedding-dim': '32',
+                              'mlp-layers': '128,64,32',
+                              'sagemaker_program': 'neumf_training.py',
+                              'sagemaker_submit_directory': f"s3://{os.environ['PIPELINE_BUCKET']}/training-scripts/training-scripts.tar.gz"
+                          },
+                          EnableManagedSpotTraining=True,  # Use spot instances for cost savings
+                          Tags=[
+                              {'Key': 'Project', 'Value': project_name}
+                          ]
+                      )
+                  except Exception as e:
+                      print(f"Failed to create training job: {str(e)}")
+                      import traceback
+                      traceback.print_exc()
+                      raise e
                   
                   print(f"Training job started: {response['TrainingJobArn']}")
                   
@@ -861,7 +870,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - iam:PassRole
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-sagemaker-role'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-sagemaker-role'
+
 
   PipelineRole:
     Type: AWS::IAM::Role
