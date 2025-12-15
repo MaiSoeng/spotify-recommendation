@@ -50,7 +50,5 @@ Resources:
 
   # Lambda for downloading Last.fm dataset
 Outputs:
-  RecommendationApiLambdaArn:
-    Value: !GetAtt RecommendationApiLambda.Arn
   ListenBrainzSecretArn:
     Value: !Ref ListenBrainzSecret
