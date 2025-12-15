@@ -104,7 +104,7 @@ Resources:
           from decimal import Decimal
 
           dynamodb = boto3.resource('dynamodb')
-          # sagemaker = boto3.client('sagemaker-runtime')
+          sagemaker = boto3.client('sagemaker-runtime')
 
           user_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
           cache_table = dynamodb.Table(os.environ['RECOMMENDATION_CACHE_TABLE'])
@@ -170,15 +170,36 @@ Resources:
 
           def get_recommendations(user_id, user, top_n):
               try:
-                  # Placeholder for SafeMaker runtime invocation
-                  # response = sagemaker.invoke_endpoint(...) 
-                  # For now, return random/popular recommendations
+                  # Invoke SageMaker Endpoint
+                  response = sagemaker.invoke_endpoint(
+                      EndpointName=os.environ['SAGEMAKER_ENDPOINT'],
+                      ContentType='application/json',
+                      Body=json.dumps({
+                          'user_id': user_id,
+                          'n_recommendations': top_n,
+                          'include_scores': True
+                      })
+                  )
+                  
+                  # Parse response
+                  result = json.loads(response['Body'].read().decode('utf-8'))
+                  
+                  # Result format from neumf_inference.py: {'recommendations': [{'track_id':..., 'score':...}]}
+                  if isinstance(result, list):
+                      return result
+                  elif 'recommendations' in result:
+                      return result['recommendations']
+                  else:
+                      print(f"Unexpected response format: {result}")
+                      return []
+                      
+              except Exception as e:
+                  print(f"Model invocation failed: {str(e)}")
+                  # Fallback to popular tracks
                   return [
                       {'track_id': f'popular_track_{i}', 'score': float(1 - i * 0.1)}
                       for i in range(top_n)
                   ]
-              except Exception:
-                  return []
 
   # Realtime feature update Lambda
   RealtimeFeatureUpdateLogGroup:
