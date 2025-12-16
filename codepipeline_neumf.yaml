@@ -418,7 +418,8 @@ Resources:
                               'VolumeSizeInGB': 50
                           },
                           StoppingCondition={
-                              'MaxRuntimeInSeconds': 7200  # 2 hours max
+                              'MaxRuntimeInSeconds': 7200,  # 2 hours max
+                              'MaxWaitTimeInSeconds': 86400 # 24 hours max wait
                           },
                           HyperParameters={
                               'epochs': '20',
@@ -874,6 +875,7 @@ Resources:
                   - sagemaker:DescribeEndpoint
                   - sagemaker:DeleteEndpointConfig
                   - sagemaker:DeleteModel
+                  - sagemaker:AddTags
                 Resource: '*'
               - Effect: Allow
                 Action:
