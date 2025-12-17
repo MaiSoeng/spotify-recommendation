@@ -124,11 +124,16 @@ def model_fn(model_dir):
     model_pt_path = os.path.join(model_dir, 'model.pt')
     model_pth_path = os.path.join(model_dir, 'model_state.pth')
     
-    if os.path.exists(model_pt_path):
-        logger.info("Loading TorchScript model...")
-        model = torch.jit.load(model_pt_path, map_location=device)
-    else:
-        logger.info("Loading model from state dict...")
+    try:
+        if os.path.exists(model_pt_path):
+            logger.info("Loading TorchScript model...")
+            model = torch.jit.load(model_pt_path, map_location=device)
+        else:
+            raise FileNotFoundError("model.pt not found")
+    except Exception as e:
+        logger.warning(f"Failed to load TorchScript model: {e}")
+        logger.info("Falling back to state dict loading...")
+        
         # Recreate model architecture
         mlp_layers = [int(x) for x in metadata.get('mlp_layers', '128,64,32').split(',')]
         
@@ -138,8 +143,10 @@ def model_fn(model_dir):
             gmf_embedding_dim=metadata.get('gmf_embedding_dim', 32),
             mlp_embedding_dim=metadata.get('mlp_embedding_dim', 32),
             mlp_layers=mlp_layers,
-            dropout=0.0  # No dropout during inference
+            dropout=0.0
         )
+        
+        # Load state dict with map_location
         model.load_state_dict(torch.load(model_pth_path, map_location=device))
     
     model.to(device)

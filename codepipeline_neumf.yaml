@@ -31,7 +31,7 @@ Parameters:
 
   SageMakerTrainingInstanceType:
     Type: String
-    Default: ml.m5.xlarge
+    Default: ml.g4dn.xlarge
     Description: SageMaker training instance type
 
   SageMakerInferenceInstanceType:
@@ -394,7 +394,7 @@ Resources:
                           TrainingJobName=job_name,
                           RoleArn=role_arn,
                           AlgorithmSpecification={
-                              'TrainingImage': f'763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:2.0.1-cpu-py310',
+                              'TrainingImage': f'763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-training:2.0.1-gpu-py310',
                               'TrainingInputMode': 'File'
                           },
                           InputDataConfig=[
@@ -418,12 +418,12 @@ Resources:
                               'VolumeSizeInGB': 50
                           },
                           StoppingCondition={
-                              'MaxRuntimeInSeconds': 7200,  # 2 hours max
-                              'MaxWaitTimeInSeconds': 86400 # 24 hours max wait
+                              'MaxRuntimeInSeconds': 7200  # 2 hours max
                           },
                           HyperParameters={
-                              'epochs': '20',
-                              'batch-size': '256',
+                              'epochs': '5',        # 5 epochs on GPU is fast
+                              'batch-size': '2048', # Optimized for T4 GPU
+                              'num-negatives': '4', # High quality
                               'learning-rate': '0.001',
                               'gmf-embedding-dim': '32',
                               'mlp-embedding-dim': '32',
@@ -431,7 +431,7 @@ Resources:
                               'sagemaker_program': 'neumf_training.py',
                               'sagemaker_submit_directory': f"s3://{pipeline_bucket}/training-scripts/training-scripts.tar.gz"
                           },
-                          EnableManagedSpotTraining=True,  # Use spot instances for cost savings
+                          EnableManagedSpotTraining=False,  # Use on-demand instances for reliability
                           Tags=[
                               {'Key': 'Project', 'Value': project_name}
                           ]
