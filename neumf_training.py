@@ -658,6 +658,7 @@ def save_model_artifacts(model, data_dict, args, training_history, final_metrics
     sample_users = list(data_dict['user_to_idx'].keys())[:100] # First 100 users
     num_items = data_dict['num_items']
     all_items_tensor = torch.tensor(list(range(num_items)), dtype=torch.long).to(device)
+    idx_to_item = data_dict['idx_to_item']
     
     predictions_export = []
     
