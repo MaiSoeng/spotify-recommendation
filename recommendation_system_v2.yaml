@@ -1,0 +1,1623 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: NeuMF Music Recommendation System - Complete Infrastructure
+
+# ===============================
+# Parameters
+# ===============================
+Parameters:
+  ProjectName:
+    Type: String
+    Default: music-recommendation-v2
+    Description: Project name prefix for all resources
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+  # Network Parameters
+  VpcId:
+    Type: String
+    Default: ""
+    Description: VPC ID for Lambda and other resources
+
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Comma-separated Subnet IDs for Lambda functions
+
+  SubnetAzs:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Comma-separated Availability Zones for subnets
+
+  RouteTableIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Comma-separated Route Table IDs
+
+  # Database Parameters
+  DBName:
+    Type: String
+    Default: recommendationdata
+    Description: Database name (for future RDS integration)
+
+  DBUsername:
+    Type: String
+    Default: admin
+    Description: Database username
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Database password (stored in Secrets Manager)
+
+  # ListenBrainz Parameters
+  ListenBrainzUsername:
+    Type: String
+    Default: MichaelMai
+    Description: ListenBrainz username for personal listening data
+
+  ListenBrainzToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: ListenBrainz API token
+
+  # GitHub Parameter
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: GitHub Personal Access Token for CI/CD
+
+  # SageMaker Parameters
+  SageMakerTrainingInstanceType:
+    Type: String
+    Default: ml.m5.xlarge
+    Description: Instance type for SageMaker training
+
+  SageMakerInferenceInstanceType:
+    Type: String
+    Default: ml.t2.medium
+    Description: Instance type for SageMaker inference endpoint
+
+# ===============================
+# Conditions
+# ===============================
+Conditions:
+  HasVpc: !Not [!Equals [!Ref VpcId, ""]]
+  HasSubnets: !Not [!Equals [!Join ["", !Ref SubnetIds], ""]]
+  HasDBPassword: !Not [!Equals [!Ref DBPassword, ""]]
+  UseVpcConfig: !And [!Condition HasVpc, !Condition HasSubnets]
+
+
+# ===============================
+# Resources
+# ===============================
+Resources:
+
+  # ===============================
+  # S3 Buckets
+  # ===============================
+  
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-raw-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldRawData
+            Status: Enabled
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ProcessedDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-processed-data-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-model-artifacts-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  GlueScriptsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-glue-scripts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ===============================
+  # VPC Configuration & Security Groups
+  # ===============================
+  
+  # Security Group for Lambda functions
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpcConfig
+    Properties:
+      GroupName: !Sub '${ProjectName}-lambda-sg'
+      GroupDescription: Security group for Lambda functions
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound for AWS APIs
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP outbound for external APIs
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-lambda-sg'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Security Group for Glue jobs
+  GlueSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseVpcConfig
+    Properties:
+      GroupName: !Sub '${ProjectName}-glue-sg'
+      GroupDescription: Security group for Glue ETL jobs
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref GlueSecurityGroup
+          Description: Self-referencing for Glue workers
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound for AWS APIs
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          DestinationSecurityGroupId: !Ref GlueSecurityGroup
+          Description: Self-referencing for Glue workers
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-glue-sg'
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ===============================
+  # VPC Endpoints (for private subnet access)
+  # ===============================
+  
+  # S3 Gateway Endpoint - Required for Glue to write to S3
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+
+  # DynamoDB Gateway Endpoint - For Lambda to access DynamoDB
+  DynamoDBVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+
+  # Glue Interface Endpoint - For Glue API calls
+  GlueVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.glue'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref GlueSecurityGroup
+      PrivateDnsEnabled: true
+
+  # SageMaker API Endpoint - For SageMaker API calls
+  SageMakerApiVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.api'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+  # SageMaker Runtime Endpoint - For inference calls
+  SageMakerRuntimeVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.runtime'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Kinesis Endpoint - For Kinesis Firehose access
+  KinesisVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseVpcConfig
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.kinesis-streams'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      PrivateDnsEnabled: true
+
+  # ===============================
+  # Lake Formation Configuration
+  # ===============================
+  
+  # Lake Formation Data Lake Settings
+  LakeFormationSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt GlueJobRole.Arn
+      TrustedResourceOwners:
+        - !Ref AWS::AccountId
+
+  # Lake Formation Permission for Raw Data Bucket
+  LakeFormationRawDataPermission:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !GetAtt RawDataBucket.Arn
+      UseServiceLinkedRole: true
+
+  # Lake Formation Permission for Processed Data Bucket
+  LakeFormationProcessedDataPermission:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !GetAtt ProcessedDataBucket.Arn
+      UseServiceLinkedRole: true
+
+  # Lake Formation Database Permission for Glue
+  LakeFormationDatabasePermission:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: GlueDatabase
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueJobRole.Arn
+      Permissions:
+        - ALL
+      Resource:
+        DatabaseResource:
+          Name: !Ref GlueDatabase
+
+  # Lake Formation Table Permission for Glue (all tables in database)
+  LakeFormationTablePermission:
+    Type: AWS::LakeFormation::Permissions
+    DependsOn: GlueDatabase
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueJobRole.Arn
+      Permissions:
+        - ALL
+      Resource:
+        TableResource:
+          DatabaseName: !Ref GlueDatabase
+          TableWildcard: {}
+
+  # Lake Formation Location Permission for Glue to write to S3
+  LakeFormationLocationPermission:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueJobRole.Arn
+      Permissions:
+        - DATA_LOCATION_ACCESS
+      Resource:
+        DataLocationResource:
+          S3Resource: !Sub 'arn:aws:s3:::${ProcessedDataBucket}'
+
+  # ===============================
+  # AWS Glue Resources
+  # ===============================
+  
+  # Glue Database
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_db'
+        Description: Database for music recommendation data
+
+  # Glue Connection for VPC access
+  GlueVpcConnection:
+    Type: AWS::Glue::Connection
+    Condition: UseVpcConfig
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      ConnectionInput:
+        Name: !Sub '${ProjectName}-glue-vpc-connection'
+        Description: VPC connection for Glue jobs
+        ConnectionType: NETWORK
+        PhysicalConnectionRequirements:
+          AvailabilityZone: !Select [0, !Ref SubnetAzs]
+          SubnetId: !Select [0, !Ref SubnetIds]
+          SecurityGroupIdList:
+            - !Ref GlueSecurityGroup
+
+  # Glue Crawler for Last.fm data
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    DependsOn: GlueDatabase
+    Properties:
+      Name: !Sub '${ProjectName}-lastfm-crawler'
+      Role: !GetAtt GlueJobRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${RawDataBucket}/lastfm/raw/chunks/'
+          - Path: !Sub 's3://${RawDataBucket}/lastfm/playlists/'
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Configuration: '{"Version":1.0,"CrawlerOutput":{"Partitions":{"AddOrUpdateBehavior":"InheritFromTable"}}}'
+      Tags:
+        Project: !Ref ProjectName
+
+  # Glue ETL Job for NeuMF data processing
+  GlueETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-neumf-etl'
+      Description: ETL job to process Last.fm data for NeuMF training
+      Role: !GetAtt GlueJobRole.Arn
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      Timeout: 120
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${GlueScriptsBucket}/scripts/glue_etl_neumf.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': python
+        '--job-bookmark-option': job-bookmark-enable
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--enable-spark-ui': 'true'
+        '--spark-event-logs-path': !Sub 's3://${GlueScriptsBucket}/spark-logs/'
+        '--raw_data_bucket': !Ref RawDataBucket
+        '--processed_data_bucket': !Ref ProcessedDataBucket
+        '--database_name': !Ref GlueDatabase
+      Connections:
+        Connections:
+          - !If [UseVpcConfig, !Ref GlueVpcConnection, !Ref 'AWS::NoValue']
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Tags:
+        Project: !Ref ProjectName
+
+  # ===============================
+  # DynamoDB Tables
+  # ===============================
+  
+
+  UserFeaturesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-user-features'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: updated_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: updated_at_index
+          KeySchema:
+            - AttributeName: updated_at
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  RecommendationCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-recommendation-cache'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  TrackMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-track-metadata'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: track_id
+          AttributeType: S
+        - AttributeName: artist_name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: track_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: artist_index
+          KeySchema:
+            - AttributeName: artist_name
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AnalyticsDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${ProjectName}-analytics-delivery'
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt ProcessedDataBucket.Arn
+        Prefix: analytics/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/
+        ErrorOutputPrefix: analytics-errors/
+        RoleARN: !GetAtt FirehoseDeliveryRole.Arn
+        BufferingHints:
+          IntervalInSeconds: 300
+          SizeInMBs: 5
+        CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub '/aws/kinesisfirehose/${ProjectName}'
+          LogStreamName: analytics-delivery
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ===============================
+  # IAM Roles
+  # ===============================
+  
+  FirehoseDeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ProcessedDataBucket.Arn
+                  - !Sub '${ProcessedDataBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                  - logs:CreateLogStream
+                Resource: '*'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawDataBucket.Arn
+                  - !Sub '${RawDataBucket.Arn}/*'
+                  - !GetAtt ProcessedDataBucket.Arn
+                  - !Sub '${ProcessedDataBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt UserFeaturesTable.Arn
+                  - !GetAtt RecommendationCacheTable.Arn
+                  - !GetAtt TrackMetadataTable.Arn
+                  - !Sub '${UserFeaturesTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                Resource: !GetAtt UserEventsStream.Arn
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt AnalyticsDeliveryStream.Arn
+              - Effect: Allow
+                Action:
+                  - sagemaker:InvokeEndpoint
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ListenBrainzSecret
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-glue-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: GlueS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt RawDataBucket.Arn
+                  - !Sub '${RawDataBucket.Arn}/*'
+                  - !GetAtt ProcessedDataBucket.Arn
+                  - !Sub '${ProcessedDataBucket.Arn}/*'
+                  - !GetAtt GlueScriptsBucket.Arn
+                  - !Sub '${GlueScriptsBucket.Arn}/*'
+        - PolicyName: GlueLakeFormationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GrantPermissions
+                  - lakeformation:GetResourceLFTags
+                  - lakeformation:ListLFTags
+                  - lakeformation:GetLFTag
+                  - lakeformation:SearchTablesByLFTags
+                  - lakeformation:SearchDatabasesByLFTags
+                Resource: '*'
+        - PolicyName: GlueVpcAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeRouteTables
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                Resource:
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
+        - PolicyName: GlueLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/*'
+
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-sagemaker-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: SageMakerS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ProcessedDataBucket.Arn
+                  - !Sub '${ProcessedDataBucket.Arn}/*'
+                  - !GetAtt ModelArtifactsBucket.Arn
+                  - !Sub '${ModelArtifactsBucket.Arn}/*'
+
+  # ===============================
+  # Secrets Manager
+  # ===============================
+  
+  ListenBrainzSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}-listenbrainz-token'
+      SecretString: !Sub '{"token": "${ListenBrainzToken}"}'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ===============================
+  # Lambda Functions
+  # ===============================
+  
+  DownloadDatasetLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-download-dataset'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      EphemeralStorage:
+        Size: 1024  # 1GB /tmp for tar.gz file
+      Environment:
+        Variables:
+          RAW_DATA_BUCKET: !Ref RawDataBucket
+          PROCESSED_DATA_BUCKET: !Ref ProcessedDataBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+          import os
+          import logging
+          import tarfile
+          import tempfile
+          from datetime import datetime
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          s3 = boto3.client('s3')
+
+          LASTFM_DATASET_URL = "http://mtg.upf.edu/static/datasets/last.fm/lastfm-dataset-1K.tar.gz"
+          CHUNK_SIZE = 50000  # Records per chunk - streaming mode
+
+          def lambda_handler(event, context):
+              bucket = os.environ['RAW_DATA_BUCKET']
+              source = event.get('source', 'lastfm_original')
+              chunk_size = event.get('chunk_size', CHUNK_SIZE)
+              
+              logger.info(f"Streaming download, source: {source}, chunk_size: {chunk_size}")
+              
+              try:
+                  if source == 'sample':
+                      stats = generate_streaming_sample(bucket, chunk_size)
+                  else:
+                      stats = stream_lastfm_dataset(bucket, chunk_size)
+                  
+                  return {'statusCode': 200, 'body': json.dumps({'message': 'Success', 'stats': stats})}
+              except Exception as e:
+                  logger.error(f"Error: {str(e)}, falling back to sample")
+                  stats = generate_streaming_sample(bucket, chunk_size)
+                  return {'statusCode': 200, 'body': json.dumps({'message': 'Fallback', 'stats': stats})}
+
+          def stream_lastfm_dataset(bucket, chunk_size):
+              """Stream download and process - memory efficient."""
+              tmp_file = '/tmp/lastfm.tar.gz'
+              
+              logger.info(f"Downloading to {tmp_file}...")
+              urllib.request.urlretrieve(LASTFM_DATASET_URL, tmp_file)
+              logger.info(f"Downloaded {os.path.getsize(tmp_file)/1024/1024:.1f} MB")
+              
+              stats = {'total_records': 0, 'chunks': 0, 'users': set(), 'tracks': set()}
+              current_chunk = []
+              chunk_num = 0
+              user_tracks = {}
+              
+              with tarfile.open(tmp_file, mode='r:gz') as tar:
+                  for member in tar.getmembers():
+                      if 'userid-timestamp-artid-artname-traid-traname.tsv' in member.name:
+                          f = tar.extractfile(member)
+                          for line in f:
+                              try:
+                                  parts = line.decode('utf-8', errors='ignore').strip().split('\t')
+                                  if len(parts) < 6:
+                                      continue
+                                  user_id, ts, artist_id, artist_name, track_id, track_name = parts[:6]
+                                  
+                                  record = {'user_id': user_id, 'timestamp': ts, 'artist_id': artist_id,
+                                           'artist_name': artist_name, 'track_id': track_id, 'track_name': track_name}
+                                  current_chunk.append(record)
+                                  stats['users'].add(user_id)
+                                  stats['tracks'].add(track_id)
+                                  stats['total_records'] += 1
+                                  
+                                  if user_id not in user_tracks:
+                                      user_tracks[user_id] = []
+                                  user_tracks[user_id].append(record)
+                                  
+                                  if len(current_chunk) >= chunk_size:
+                                      upload_chunk(bucket, current_chunk, chunk_num)
+                                      chunk_num += 1
+                                      stats['chunks'] += 1
+                                      current_chunk = []
+                                      
+                                      if stats['total_records'] % 1000000 == 0:
+                                          logger.info(f"Processed {stats['total_records']:,} records")
+                                      
+                                      if len(user_tracks) > 500:
+                                          upload_playlists(bucket, user_tracks, chunk_num)
+                                          user_tracks = {}
+                              except:
+                                  continue
+                          break
+              
+              if current_chunk:
+                  upload_chunk(bucket, current_chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+              
+              try:
+                  os.remove(tmp_file)
+              except:
+                  pass
+              
+              upload_metadata(bucket, stats)
+              stats['users'] = len(stats['users'])
+              stats['tracks'] = len(stats['tracks'])
+              logger.info(f"Done! {stats['total_records']:,} records in {stats['chunks']} chunks")
+              return stats
+
+          def upload_chunk(bucket, records, chunk_num):
+              header = 'user_id\ttimestamp\tartist_id\tartist_name\ttrack_id\ttrack_name'
+              lines = [header] + ['\t'.join([r.get(k,'') for k in 
+                  ['user_id','timestamp','artist_id','artist_name','track_id','track_name']]) for r in records]
+              s3.put_object(Bucket=bucket, Key=f'lastfm/raw/chunks/chunk_{chunk_num:05d}.tsv',
+                           Body='\n'.join(lines), ContentType='text/tab-separated-values')
+
+          def upload_playlists(bucket, user_tracks, chunk_num):
+              playlists = []
+              for pid, (uid, tracks) in enumerate(user_tracks.items()):
+                  tracks.sort(key=lambda x: x.get('timestamp', '0'))
+                  playlist_tracks = [{'pos': i, 'track_uri': t['track_id'], 'track_name': t['track_name'],
+                      'artist_uri': t['artist_id'], 'artist_name': t['artist_name'],
+                      'album_uri': f'album_{i}', 'album_name': 'Album', 'duration_ms': 200000}
+                      for i, t in enumerate(tracks)]
+                  playlists.append({'name': f'User {uid}', 'pid': chunk_num*1000+pid,
+                      'num_tracks': len(playlist_tracks), 'tracks': playlist_tracks, 'user_id': uid})
+              s3.put_object(Bucket=bucket, Key=f'lastfm/playlists/chunk_{chunk_num:05d}.json',
+                           Body=json.dumps({'playlists': playlists}), ContentType='application/json')
+
+          def upload_metadata(bucket, stats):
+              metadata = {'dataset': 'Last.fm 1K', 'source': LASTFM_DATASET_URL, 'mode': 'streaming',
+                  'downloaded_at': datetime.now().isoformat(), 'total_records': stats['total_records'],
+                  'chunks': stats['chunks'], 'unique_users': len(stats['users']) if isinstance(stats['users'], set) else stats['users'],
+                  'unique_tracks': len(stats['tracks']) if isinstance(stats['tracks'], set) else stats['tracks']}
+              s3.put_object(Bucket=bucket, Key='lastfm/metadata.json',
+                           Body=json.dumps(metadata, indent=2), ContentType='application/json')
+              s3.put_object(Bucket=bucket, Key='lastfm/manifest.json',
+                           Body=json.dumps({'entries': [{'url': f's3://{bucket}/lastfm/raw/chunks/', 'mandatory': True}]}),
+                           ContentType='application/json')
+
+          def generate_streaming_sample(bucket, chunk_size, total=500000):
+              import random
+              random.seed(42)
+              artists = [(f'artist_{i}', f'Artist {i}', random.random()**2) for i in range(500)]
+              artists.sort(key=lambda x: x[2], reverse=True)
+              weights = [a[2]/sum(a[2] for a in artists) for a in artists]
+              users = [f'user_{i:05d}' for i in range(300)]
+              
+              stats = {'total_records': 0, 'chunks': 0, 'users': set(users), 'tracks': set()}
+              current_chunk = []
+              chunk_num = 0
+              user_tracks = {}
+              
+              for _ in range(total):
+                  user = random.choice(users)
+                  artist = artists[random.choices(range(len(artists)), weights=weights, k=1)[0]]
+                  track_num = random.randint(1, 20)
+                  track_id = f'track_{artist[0]}_{track_num:02d}'
+                  record = {'user_id': user, 'timestamp': str(1230000000+random.randint(0,50000000)),
+                      'artist_id': f'mbid_{artist[0]}', 'artist_name': artist[1],
+                      'track_id': track_id, 'track_name': f'{artist[1]} - Track {track_num}'}
+                  current_chunk.append(record)
+                  stats['tracks'].add(track_id)
+                  stats['total_records'] += 1
+                  if user not in user_tracks:
+                      user_tracks[user] = []
+                  user_tracks[user].append(record)
+                  
+                  if len(current_chunk) >= chunk_size:
+                      upload_chunk(bucket, current_chunk, chunk_num)
+                      chunk_num += 1
+                      stats['chunks'] += 1
+                      current_chunk = []
+                      if len(user_tracks) > 200:
+                          upload_playlists(bucket, user_tracks, chunk_num)
+                          user_tracks = {}
+              
+              if current_chunk:
+                  upload_chunk(bucket, current_chunk, chunk_num)
+                  stats['chunks'] += 1
+              if user_tracks:
+                  upload_playlists(bucket, user_tracks, chunk_num + 1)
+              upload_metadata(bucket, stats)
+              stats['users'] = len(stats['users'])
+              stats['tracks'] = len(stats['tracks'])
+              stats['source'] = 'sample'
+              return stats
+
+
+
+
+  RecommendationApiLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-recommendation-api'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          RECOMMENDATION_CACHE_TABLE: !Ref RecommendationCacheTable
+          TRACK_METADATA_TABLE: !Ref TrackMetadataTable
+          SAGEMAKER_ENDPOINT: !Sub '${ProjectName}-neumf-endpoint'
+          FIREHOSE_STREAM: !Ref AnalyticsDeliveryStream
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import logging
+          import time
+          from decimal import Decimal
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          dynamodb = boto3.resource('dynamodb')
+          sagemaker_runtime = boto3.client('sagemaker-runtime')
+          firehose = boto3.client('firehose')
+
+          user_features_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          cache_table = dynamodb.Table(os.environ['RECOMMENDATION_CACHE_TABLE'])
+          track_table = dynamodb.Table(os.environ['TRACK_METADATA_TABLE'])
+
+          def lambda_handler(event, context):
+              logger.info(f"Received event: {json.dumps(event)}")
+              
+              # Parse request
+              if 'body' in event:
+                  body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
+              else:
+                  body = event
+              
+              user_id = body.get('user_id')
+              n_recommendations = body.get('n_recommendations', 10)
+              refresh = body.get('refresh', False)
+              
+              if not user_id:
+                  return response(400, {'error': 'user_id is required'})
+              
+              try:
+                  # Check cache first (unless refresh requested)
+                  if not refresh:
+                      cached = get_cached_recommendations(user_id)
+                      if cached:
+                          logger.info(f"Returning cached recommendations for user {user_id}")
+                          return response(200, cached)
+                  
+                  # Get user features from DynamoDB
+                  user_features = get_user_features(user_id)
+                  
+                  # Call SageMaker endpoint for predictions
+                  recommendations = get_recommendations_from_model(
+                      user_id, 
+                      user_features, 
+                      n_recommendations
+                  )
+                  
+                  # Cache the results
+                  cache_recommendations(user_id, recommendations)
+                  
+                  # Log to analytics
+                  log_recommendation_request(user_id, recommendations)
+                  
+                  return response(200, {
+                      'user_id': user_id,
+                      'recommendations': recommendations,
+                      'cached': False,
+                      'timestamp': int(time.time())
+                  })
+                  
+              except Exception as e:
+                  logger.error(f"Error generating recommendations: {str(e)}")
+                  return response(500, {'error': str(e)})
+
+          def get_user_features(user_id):
+              try:
+                  response = user_features_table.get_item(Key={'user_id': user_id})
+                  return response.get('Item', {})
+              except Exception as e:
+                  logger.warning(f"Could not get user features: {e}")
+                  return {}
+
+          def get_recommendations_from_model(user_id, user_features, n_recommendations):
+              endpoint_name = os.environ['SAGEMAKER_ENDPOINT']
+              
+              try:
+                  # Prepare input for NeuMF model
+                  payload = {
+                      'user_id': user_id,
+                      'user_features': user_features,
+                      'n_recommendations': n_recommendations
+                  }
+                  
+                  response = sagemaker_runtime.invoke_endpoint(
+                      EndpointName=endpoint_name,
+                      ContentType='application/json',
+                      Body=json.dumps(payload)
+                  )
+                  
+                  result = json.loads(response['Body'].read().decode())
+                  return result.get('recommendations', [])
+                  
+              except Exception as e:
+                  logger.warning(f"SageMaker endpoint not available: {e}")
+                  # Return placeholder recommendations
+                  return [
+                      {"track_id": f"track_{i}", "score": 0.9 - i*0.05, "track_name": f"Recommended Track {i}"}
+                      for i in range(n_recommendations)
+                  ]
+
+          def get_cached_recommendations(user_id):
+              try:
+                  response = cache_table.get_item(Key={'user_id': user_id})
+                  item = response.get('Item')
+                  if item and item.get('ttl', 0) > int(time.time()):
+                      return {
+                          'user_id': user_id,
+                          'recommendations': item.get('recommendations', []),
+                          'cached': True,
+                          'timestamp': int(item.get('created_at', 0))
+                      }
+              except Exception as e:
+                  logger.warning(f"Cache lookup failed: {e}")
+              return None
+
+          def cache_recommendations(user_id, recommendations):
+              try:
+                  ttl = int(time.time()) + 3600  # 1 hour cache
+                  cache_table.put_item(Item={
+                      'user_id': user_id,
+                      'recommendations': recommendations,
+                      'created_at': Decimal(str(time.time())),
+                      'ttl': ttl
+                  })
+              except Exception as e:
+                  logger.warning(f"Failed to cache recommendations: {e}")
+
+          def log_recommendation_request(user_id, recommendations):
+              try:
+                  record = {
+                      'event_type': 'recommendation_request',
+                      'user_id': user_id,
+                      'num_recommendations': len(recommendations),
+                      'timestamp': int(time.time())
+                  }
+                  firehose.put_record(
+                      DeliveryStreamName=os.environ['FIREHOSE_STREAM'],
+                      Record={'Data': json.dumps(record) + '\n'}
+                  )
+              except Exception as e:
+                  logger.warning(f"Failed to log to Firehose: {e}")
+
+          def response(status_code, body):
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*'
+                  },
+                  'body': json.dumps(body, default=str)
+              }
+
+  RealtimeFeatureLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-realtime-feature-update'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          USER_FEATURES_TABLE: !Ref UserFeaturesTable
+          RECOMMENDATION_CACHE_TABLE: !Ref RecommendationCacheTable
+          FIREHOSE_STREAM: !Ref AnalyticsDeliveryStream
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+          import os
+          import logging
+          import time
+          from decimal import Decimal
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          dynamodb = boto3.resource('dynamodb')
+          firehose = boto3.client('firehose')
+
+          user_features_table = dynamodb.Table(os.environ['USER_FEATURES_TABLE'])
+          cache_table = dynamodb.Table(os.environ['RECOMMENDATION_CACHE_TABLE'])
+
+          def lambda_handler(event, context):
+              logger.info(f"Processing {len(event.get('Records', []))} records")
+              
+              processed = 0
+              errors = 0
+              
+              for record in event.get('Records', []):
+                  try:
+                      # Decode Kinesis record
+                      payload = base64.b64decode(record['kinesis']['data']).decode('utf-8')
+                      listen_event = json.loads(payload)
+                      
+                      # Update user features
+                      update_user_features(listen_event)
+                      
+                      # Invalidate recommendation cache
+                      invalidate_cache(listen_event.get('user_id'))
+                      
+                      # Forward to Firehose for analytics
+                      forward_to_analytics(listen_event)
+                      
+                      processed += 1
+                      
+                  except Exception as e:
+                      logger.error(f"Error processing record: {e}")
+                      errors += 1
+              
+              logger.info(f"Processed: {processed}, Errors: {errors}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'processed': processed,
+                      'errors': errors
+                  })
+              }
+
+          def update_user_features(listen_event):
+              user_id = listen_event.get('user_id')
+              if not user_id:
+                  return
+              
+              track_id = listen_event.get('track_id')
+              artist_name = listen_event.get('artist_name')
+              timestamp = listen_event.get('timestamp', int(time.time()))
+              
+              try:
+                  # Update user listening history and features
+                  user_features_table.update_item(
+                      Key={'user_id': user_id},
+                      UpdateExpression='''
+                          SET updated_at = :updated_at,
+                              last_track_id = :track_id,
+                              last_artist = :artist,
+                              listen_count = if_not_exists(listen_count, :zero) + :one,
+                              recent_tracks = list_append(
+                                  if_not_exists(recent_tracks, :empty_list),
+                                  :new_track
+                              )
+                      ''',
+                      ExpressionAttributeValues={
+                          ':updated_at': str(timestamp),
+                          ':track_id': track_id,
+                          ':artist': artist_name,
+                          ':zero': 0,
+                          ':one': 1,
+                          ':empty_list': [],
+                          ':new_track': [{'track_id': track_id, 'timestamp': timestamp}]
+                      }
+                  )
+                  
+                  # Trim recent_tracks to last 100
+                  trim_recent_tracks(user_id)
+                  
+              except Exception as e:
+                  logger.error(f"Failed to update user features: {e}")
+
+          def trim_recent_tracks(user_id, max_tracks=100):
+              try:
+                  response = user_features_table.get_item(Key={'user_id': user_id})
+                  item = response.get('Item', {})
+                  recent_tracks = item.get('recent_tracks', [])
+                  
+                  if len(recent_tracks) > max_tracks:
+                      user_features_table.update_item(
+                          Key={'user_id': user_id},
+                          UpdateExpression='SET recent_tracks = :trimmed',
+                          ExpressionAttributeValues={
+                              ':trimmed': recent_tracks[-max_tracks:]
+                          }
+                      )
+              except Exception as e:
+                  logger.warning(f"Failed to trim recent tracks: {e}")
+
+          def invalidate_cache(user_id):
+              if not user_id:
+                  return
+              try:
+                  cache_table.delete_item(Key={'user_id': user_id})
+              except Exception as e:
+                  logger.warning(f"Failed to invalidate cache: {e}")
+
+          def forward_to_analytics(listen_event):
+              try:
+                  listen_event['event_type'] = 'listen'
+                  listen_event['processed_at'] = int(time.time())
+                  
+                  firehose.put_record(
+                      DeliveryStreamName=os.environ['FIREHOSE_STREAM'],
+                      Record={'Data': json.dumps(listen_event) + '\n'}
+                  )
+              except Exception as e:
+                  logger.warning(f"Failed to forward to analytics: {e}")
+
+  # Kinesis Event Source Mapping
+  RealtimeFeatureEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt UserEventsStream.Arn
+      FunctionName: !GetAtt RealtimeFeatureLambda.Arn
+      StartingPosition: LATEST
+      BatchSize: 100
+      MaximumBatchingWindowInSeconds: 5
+
+  ListenBrainzIngestLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-listenbrainz-ingest'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          LISTENBRAINZ_SECRET_ARN: !Ref ListenBrainzSecret
+          LISTENBRAINZ_USER_NAME: !Ref ListenBrainzUsername
+          KINESIS_STREAM_NAME: !Ref UserEventsStream
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import urllib.request
+          import os
+          import logging
+          import time
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          secrets_manager = boto3.client('secretsmanager')
+          kinesis = boto3.client('kinesis')
+
+          API_BASE = "https://api.listenbrainz.org/1"
+
+          def lambda_handler(event, context):
+              user_name = os.environ['LISTENBRAINZ_USER_NAME']
+              stream_name = os.environ['KINESIS_STREAM_NAME']
+              
+              try:
+                  # Get API token
+                  token = get_listenbrainz_token()
+                  
+                  # Fetch recent listens
+                  listens = fetch_recent_listens(user_name, token)
+                  
+                  if not listens:
+                      logger.info("No new listens found")
+                      return {'statusCode': 200, 'body': 'No new listens'}
+                  
+                  # Send to Kinesis
+                  records_sent = 0
+                  for listen in listens:
+                      record = transform_listen(listen, user_name)
+                      
+                      kinesis.put_record(
+                          StreamName=stream_name,
+                          Data=json.dumps(record),
+                          PartitionKey=user_name
+                      )
+                      records_sent += 1
+                  
+                  logger.info(f"Sent {records_sent} records to Kinesis")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'records_sent': records_sent})
+                  }
+                  
+              except Exception as e:
+                  logger.error(f"Error: {str(e)}")
+                  raise
+
+          def get_listenbrainz_token():
+              secret_arn = os.environ['LISTENBRAINZ_SECRET_ARN']
+              response = secrets_manager.get_secret_value(SecretId=secret_arn)
+              secret = json.loads(response['SecretString'])
+              return secret.get('token')
+
+          def fetch_recent_listens(user_name, token, count=5):
+              url = f"{API_BASE}/user/{user_name}/listens?count={count}"
+              
+              request = urllib.request.Request(url)
+              request.add_header("Authorization", f"Token {token}")
+              
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  data = json.loads(response.read().decode('utf-8'))
+              
+              return data.get('payload', {}).get('listens', [])
+
+          def transform_listen(listen, user_name):
+              track_meta = listen.get('track_metadata', {})
+              additional = track_meta.get('additional_info', {})
+              
+              return {
+                  'user_id': user_name,
+                  'timestamp': listen.get('listened_at', int(time.time())),
+                  'track_id': additional.get('spotify_id') or additional.get('recording_mbid') or str(hash(track_meta.get('track_name', ''))),
+                  'track_name': track_meta.get('track_name'),
+                  'artist_name': track_meta.get('artist_name'),
+                  'album_name': track_meta.get('release_name'),
+                  'duration_ms': additional.get('duration_ms'),
+                  'source': 'listenbrainz'
+              }
+
+  # EventBridge Rule for periodic ListenBrainz ingestion
+  ListenBrainzScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-listenbrainz-schedule'
+      ScheduleExpression: rate(15 minutes)
+      State: ENABLED
+      Targets:
+        - Id: ListenBrainzIngestTarget
+          Arn: !GetAtt ListenBrainzIngestLambda.Arn
+
+  ListenBrainzSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListenBrainzIngestLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ListenBrainzScheduleRule.Arn
+
+  # ===============================
+  # API Gateway
+  # ===============================
+  
+  RecommendationApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-api'
+      Description: Music Recommendation API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  RecommendationsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      ParentId: !GetAtt RecommendationApi.RootResourceId
+      PathPart: recommendations
+
+  RecommendationsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      ResourceId: !Ref RecommendationsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RecommendationApiLambda.Arn}/invocations'
+
+  RecommendationsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      ResourceId: !Ref RecommendationsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ApiGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RecommendationApiLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RecommendationApi}/*'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - RecommendationsMethod
+      - RecommendationsOptionsMethod
+    Properties:
+      RestApiId: !Ref RecommendationApi
+      StageName: !Ref Environment
+
+  # ===============================
+  # Glue Resources
+  # ===============================
+  
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_db'
+        Description: Database for music recommendation data
+
+  NeuMFDataProcessingJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-neumf-data-processing'
+      Role: !GetAtt GlueJobRole.Arn
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      Timeout: 60
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${GlueScriptsBucket}/scripts/glue_etl_neumf.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': python
+        '--database_name': !Sub '${ProjectName}_db'
+        '--raw_data_bucket': !Ref RawDataBucket
+        '--processed_data_bucket': !Ref ProcessedDataBucket
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+
+  # ===============================
+  # Athena Resources
+  # ===============================
+  
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-workgroup'
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${ProcessedDataBucket}/athena-results/'
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+# ===============================
+# Outputs
+# ===============================
+Outputs:
+  RawDataBucketName:
+    Description: S3 bucket for raw data
+    Value: !Ref RawDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-RawDataBucket'
+
+  ProcessedDataBucketName:
+    Description: S3 bucket for processed data
+    Value: !Ref ProcessedDataBucket
+    Export:
+      Name: !Sub '${ProjectName}-ProcessedDataBucket'
+
+  ModelArtifactsBucketName:
+    Description: S3 bucket for model artifacts
+    Value: !Ref ModelArtifactsBucket
+    Export:
+      Name: !Sub '${ProjectName}-ModelArtifactsBucket'
+
+  UserFeaturesTableName:
+    Description: DynamoDB table for user features
+    Value: !Ref UserFeaturesTable
+    Export:
+      Name: !Sub '${ProjectName}-UserFeaturesTable'
+
+  UserEventsStreamArn:
+    Description: Kinesis stream for user events
+    Value: !GetAtt UserEventsStream.Arn
+    Export:
+      Name: !Sub '${ProjectName}-UserEventsStream'
+
+  RecommendationApiUrl:
+    Description: URL for the recommendation API
+    Value: !Sub 'https://${RecommendationApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/recommendations'
+    Export:
+      Name: !Sub '${ProjectName}-ApiUrl'
+
+  SageMakerRoleArn:
+    Description: SageMaker execution role ARN
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-SageMakerRole'
+
+  GlueJobName:
+    Description: Glue ETL job name
+    Value: !Ref NeuMFDataProcessingJob
+    Export:
+      Name: !Sub '${ProjectName}-GlueJob'
+
+  DownloadDatasetLambdaArn:
+    Description: Lambda function to download dataset
+    Value: !GetAtt DownloadDatasetLambda.Arn
+    Export:
+      Name: !Sub '${ProjectName}-DownloadDatasetLambda'

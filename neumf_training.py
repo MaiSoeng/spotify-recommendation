@@ -626,6 +626,65 @@ def save_model_artifacts(model, data_dict, args, training_history, final_metrics
     
     logger.info("Model artifacts saved successfully")
 
+    # ===============================
+    # Analytics / Visualization Data
+    # ===============================
+    output_data_dir = os.environ.get('SM_OUTPUT_DATA_DIR', '/opt/ml/output/data')
+    os.makedirs(output_data_dir, exist_ok=True)
+    
+    # Save Training Metrics for QuickSight
+    # Flat JSON structure is easier for QuickSight/Athena
+    metrics_flat = []
+    for epoch_data in training_history:
+        metrics_flat.append({
+            'epoch': epoch_data['epoch'],
+            'loss': epoch_data['train_loss'],
+            'hr_10': epoch_data['HR@10'],
+            'ndcg_10': epoch_data['NDCG@10'],
+            'timestamp': datetime.now().isoformat()
+        })
+    
+    with open(os.path.join(output_data_dir, 'training_metrics.json'), 'w') as f:
+        # Save as newline-delimited JSON for Athena
+        for row in metrics_flat:
+            f.write(json.dumps(row) + '\n')
+
+    # Generate Batch Predictions (Snapshot)
+    # Predict Top-10 tracks for a sample of users
+    logger.info("Generating sample predictions for visualization...")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.eval()
+    
+    sample_users = list(data_dict['user_to_idx'].keys())[:100] # First 100 users
+    num_items = data_dict['num_items']
+    all_items_tensor = torch.tensor(list(range(num_items)), dtype=torch.long).to(device)
+    
+    predictions_export = []
+    
+    with torch.no_grad():
+        for user_id in sample_users:
+            user_idx = data_dict['user_to_idx'][user_id]
+            user_tensor = torch.tensor([user_idx] * num_items, dtype=torch.long).to(device)
+            
+            scores = model(user_tensor, all_items_tensor).cpu().numpy()
+            top_indices = np.argsort(-scores)[:5] # Top 5
+            
+            for rank, item_idx in enumerate(top_indices):
+                item_name = idx_to_item[str(item_idx)]
+                predictions_export.append({
+                    'user_id': user_id,
+                    'track': item_name,
+                    'rank': rank + 1,
+                    'score': float(scores[item_idx]),
+                    'prediction_date': datetime.now().date().isoformat()
+                })
+                
+    with open(os.path.join(output_data_dir, 'sample_predictions.json'), 'w') as f:
+        for row in predictions_export:
+            f.write(json.dumps(row) + '\n')
+            
+    logger.info(f"Saved {len(predictions_export)} predictions to {output_data_dir}")
+
 
 # ===============================
 # SageMaker Inference Functions
