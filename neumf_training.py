@@ -671,7 +671,7 @@ def save_model_artifacts(model, data_dict, args, training_history, final_metrics
             top_indices = np.argsort(-scores)[:5] # Top 5
             
             for rank, item_idx in enumerate(top_indices):
-                item_name = idx_to_item[str(item_idx)]
+                item_name = idx_to_item[item_idx]
                 predictions_export.append({
                     'user_id': user_id,
                     'track': item_name,
