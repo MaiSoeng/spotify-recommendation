@@ -177,7 +177,8 @@ Resources:
                       Body=json.dumps({
                           'user_id': user_id,
                           'n_recommendations': top_n,
-                          'include_scores': True
+                          'include_scores': True,
+                          'exclude_items': [user.get('last_track')] if user.get('last_track') else []
                       })
                   )
                   
