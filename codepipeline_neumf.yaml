@@ -527,7 +527,42 @@ Resources:
                   
                   # Get model artifacts location
                   training_job = sagemaker.describe_training_job(TrainingJobName=training_job_name)
-                  model_data_url = training_job['ModelArtifacts']['S3ModelArtifacts']
+                  original_model_url = training_job['ModelArtifacts']['S3ModelArtifacts']
+                  
+                  # ==========================================================
+                  # Repack Model with Latest Inference Script
+                  # ==========================================================
+                  print(f"Repacking model from {original_model_url}")
+                  
+                  # Download original model
+                  bucket_name = original_model_url.split('/')[2]
+                  key = '/'.join(original_model_url.split('/')[3:])
+                  s3 = boto3.client('s3')
+                  s3.download_file(bucket_name, key, 'model.tar.gz')
+                  
+                  # Add new inference script to code/ folder in tar
+                  import tarfile
+                  
+                  # Create code directory structure
+                  os.makedirs('code', exist_ok=True)
+                  # Copy the local neumf_inference.py to code/inference.py (standard convention)
+                  import shutil
+                  shutil.copy('neumf_inference.py', 'code/inference.py')
+                  # Also copy as neumf_inference.py just in case
+                  shutil.copy('neumf_inference.py', 'code/neumf_inference.py')
+                  # Copy requirements if exists
+                  if os.path.exists('requirements.txt'):
+                      shutil.copy('requirements.txt', 'code/requirements.txt')
+
+                  # Update tarball
+                  with tarfile.open('model.tar.gz', 'a:gz') as tar:
+                      tar.add('code', arcname='code')
+                  
+                  # Upload repacked model
+                  repacked_key = f"repacked-models/{training_job_name}/model.tar.gz"
+                  s3.upload_file('model.tar.gz', bucket_name, repacked_key)
+                  model_data_url = f"s3://{bucket_name}/{repacked_key}"
+                  print(f"Repacked model uploaded to {model_data_url}")
                   
                   timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
                   model_name = f"{project_name}-neumf-{timestamp}"
@@ -535,7 +570,6 @@ Resources:
                   endpoint_name = f"{project_name}-neumf-endpoint"
                   
                   print(f"Creating model: {model_name}")
-                  print(f"Model data: {model_data_url}")
                   
                   # Create model
                   sagemaker.create_model(
@@ -544,7 +578,8 @@ Resources:
                           'Image': f'763104351884.dkr.ecr.{region}.amazonaws.com/pytorch-inference:2.0.1-cpu-py310',
                           'ModelDataUrl': model_data_url,
                           'Environment': {
-                              'SAGEMAKER_PROGRAM': 'neumf_inference.py'
+                              'SAGEMAKER_PROGRAM': 'inference.py',
+                              'SAGEMAKER_SUBMIT_DIRECTORY': 'code'
                           }
                       },
                       ExecutionRoleArn=role_arn,
@@ -634,6 +669,38 @@ Resources:
                 OutputArtifactFormat: CODE_ZIP
               OutputArtifacts:
                 - Name: SourceArtifact
+
+
+        # Stage 1.5: Update Pipeline (Self-Mutate)
+        - Name: UpdatePipeline
+          Actions:
+            - Name: UpdatePipeline
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Ref AWS::StackName
+                TemplatePath: SourceArtifact::codepipeline_neumf.yaml
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                ParameterOverrides: !Sub |
+                  {
+                    "ProjectName": "${ProjectName}",
+                    "GitHubOwner": "${GitHubOwner}",
+                    "GitHubRepo": "${GitHubRepo}",
+                    "GitHubBranch": "${GitHubBranch}",
+                    "CodeStarConnectionArn": "${CodeStarConnectionArn}",
+                    "SageMakerTrainingInstanceType": "${SageMakerTrainingInstanceType}",
+                    "SageMakerInferenceInstanceType": "${SageMakerInferenceInstanceType}",
+                    "ModelTrainingSchedule": "${ModelTrainingSchedule}",
+                    "NotificationEmail": "${NotificationEmail}"
+                  }
+              RunOrder: 1
 
         # Stage 2: Test and Package
         - Name: TestAndPackage
