@@ -525,15 +525,35 @@ Resources:
                   role_arn = os.environ['SAGEMAKER_ROLE']
                   instance_type = os.environ['INFERENCE_INSTANCE_TYPE']
                   region = os.environ['REGION']
+
+                  # DEBUG: Print environment and directories
+                  print("DEBUG: Listing codebuild-related env vars:")
+                  for k, v in os.environ.items():
+                      if k.startswith('CODEBUILD'):
+                          print(f"{k}={v}")
                   
+                  print(f"DEBUG: Current directory {os.getcwd()} contents:")
+                  print(os.listdir('.'))
+
                   # Read training job name from TrainingArtifact (Secondary Source)
-                  training_artifact_dir = os.environ.get('CODEBUILD_SRC_DIR_TrainingArtifact', '.')
-                  job_name_path = os.path.join(training_artifact_dir, 'training_job_name.txt')
+                  training_artifact_dir = os.environ.get('CODEBUILD_SRC_DIR_TrainingArtifact')
+                  
+                  if training_artifact_dir:
+                      print(f"DEBUG: Training artifact dir set to: {training_artifact_dir}")
+                      print(f"DEBUG: Contents: {os.listdir(training_artifact_dir)}")
+                      job_name_path = os.path.join(training_artifact_dir, 'training_job_name.txt')
+                  else:
+                      print("DEBUG: CODEBUILD_SRC_DIR_TrainingArtifact not set, looking in current dir")
+                      training_artifact_dir = '.'
+                      job_name_path = 'training_job_name.txt'
                   
                   # Fallback for local testing
-                  if not os.path.exists(job_name_path) and os.path.exists('training_job_name.txt'):
-                      job_name_path = 'training_job_name.txt'
-                      
+                  if not os.path.exists(job_name_path):
+                      print(f"WARNING: {job_name_path} does not exist. Checking alternative locations.")
+                      if os.path.exists('training_job_name.txt'):
+                           job_name_path = 'training_job_name.txt'
+
+                  print(f"Reading job name from: {job_name_path}")
                   with open(job_name_path, 'r') as f:
                       training_job_name = f.read().strip()
                   
@@ -692,36 +712,6 @@ Resources:
                 - Name: SourceArtifact
 
 
-        # Stage 1.5: Update Pipeline (Self-Mutate)
-        - Name: UpdatePipeline
-          Actions:
-            - Name: UpdatePipeline
-              ActionTypeId:
-                Category: Deploy
-                Owner: AWS
-                Provider: CloudFormation
-                Version: '1'
-              InputArtifacts:
-                - Name: SourceArtifact
-              Configuration:
-                ActionMode: CREATE_UPDATE
-                StackName: !Ref AWS::StackName
-                TemplatePath: SourceArtifact::codepipeline_neumf.yaml
-                Capabilities: CAPABILITY_NAMED_IAM
-                RoleArn: !GetAtt CloudFormationRole.Arn
-                ParameterOverrides: !Sub |
-                  {
-                    "ProjectName": "${ProjectName}",
-                    "GitHubOwner": "${GitHubOwner}",
-                    "GitHubRepo": "${GitHubRepo}",
-                    "GitHubBranch": "${GitHubBranch}",
-                    "CodeStarConnectionArn": "${CodeStarConnectionArn}",
-                    "SageMakerTrainingInstanceType": "${SageMakerTrainingInstanceType}",
-                    "SageMakerInferenceInstanceType": "${SageMakerInferenceInstanceType}",
-                    "ModelTrainingSchedule": "${ModelTrainingSchedule}",
-                    "NotificationEmail": "${NotificationEmail}"
-                  }
-              RunOrder: 1
 
         # Stage 2: Test and Package
         - Name: TestAndPackage
