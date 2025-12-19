@@ -526,8 +526,15 @@ Resources:
                   instance_type = os.environ['INFERENCE_INSTANCE_TYPE']
                   region = os.environ['REGION']
                   
-                  # Read training job name
-                  with open('training_job_name.txt', 'r') as f:
+                  # Read training job name from TrainingArtifact (Secondary Source)
+                  training_artifact_dir = os.environ.get('CODEBUILD_SRC_DIR_TrainingArtifact', '.')
+                  job_name_path = os.path.join(training_artifact_dir, 'training_job_name.txt')
+                  
+                  # Fallback for local testing
+                  if not os.path.exists(job_name_path) and os.path.exists('training_job_name.txt'):
+                      job_name_path = 'training_job_name.txt'
+                      
+                  with open(job_name_path, 'r') as f:
                       training_job_name = f.read().strip()
                   
                   # Get model artifacts location
@@ -551,9 +558,8 @@ Resources:
                   # Create code directory structure
                   os.makedirs('code', exist_ok=True)
                   
-                  # Copy neumf_inference.py from SourceArtifact (secondary source)
-                  source_dir = os.environ.get('CODEBUILD_SRC_DIR_SourceArtifact', '.')
-                  source_file = os.path.join(source_dir, 'neumf_inference.py')
+                  # Copy neumf_inference.py from Current Directory (Primary Source)
+                  source_file = 'neumf_inference.py'
                   
                   import shutil
                   print(f"Copying inference script from {source_file}")
@@ -562,13 +568,9 @@ Resources:
                       # Also copy as neumf_inference.py just in case
                       shutil.copy(source_file, 'code/neumf_inference.py')
                   else:
-                      print(f"ERROR: {source_file} not found!")
-                      # Fallback to current dir if running locally or single source
-                      if os.path.exists('neumf_inference.py'):
-                          shutil.copy('neumf_inference.py', 'code/inference.py')
-                          shutil.copy('neumf_inference.py', 'code/neumf_inference.py')
-                      else:
-                          raise FileNotFoundError("neumf_inference.py not found in source")
+                      print(f"ERROR: {source_file} not found in current directory!")
+                      raise FileNotFoundError("neumf_inference.py not found")
+                      
                   # Copy requirements if exists
                   if os.path.exists('requirements.txt'):
                       shutil.copy('requirements.txt', 'code/requirements.txt')
@@ -860,10 +862,11 @@ Resources:
                 Provider: CodeBuild
                 Version: '1'
               InputArtifacts:
-                - Name: TrainingArtifact
                 - Name: SourceArtifact
+                - Name: TrainingArtifact
               Configuration:
                 ProjectName: !Ref ModelDeploymentBuild
+                PrimarySource: SourceArtifact
               RunOrder: 2
 
   # ===============================
