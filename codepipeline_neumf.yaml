@@ -423,16 +423,16 @@ Resources:
                               'VolumeSizeInGB': 50
                           },
                           StoppingCondition={
-                              'MaxRuntimeInSeconds': 7200  # 2 hours max
+                              'MaxRuntimeInSeconds': 14400  # 4 hours max
                           },
                           HyperParameters={
-                              'epochs': '5',        # 5 epochs on GPU is fast
-                              'batch-size': '2048', # Optimized for T4 GPU
-                              'num-negatives': '4', # High quality
-                              'learning-rate': '0.001',
-                              'gmf-embedding-dim': '32',
-                              'mlp-embedding-dim': '32',
-                              'mlp-layers': '128,64,32',
+                              'epochs': '20',        # More epochs for better personalization
+                              'batch-size': '4096',  # Larger batch for faster training
+                              'num-negatives': '6',  # More negatives for better discrimination
+                              'learning-rate': '0.0025',  # Higher LR for faster convergence
+                              'gmf-embedding-dim': '64',  # Larger embeddings for more capacity
+                              'mlp-embedding-dim': '64',
+                              'mlp-layers': '256,128,64',  # Deeper network
                               'sagemaker_program': 'neumf_training.py',
                               'sagemaker_submit_directory': f"s3://{pipeline_bucket}/training-scripts/training-scripts.tar.gz"
                           },
@@ -453,7 +453,7 @@ Resources:
                       waiter = sagemaker.get_waiter('training_job_completed_or_stopped')
                       waiter.wait(
                           TrainingJobName=job_name,
-                          WaiterConfig={'Delay': 60, 'MaxAttempts': 120}  # Up to 2 hours
+                          WaiterConfig={'Delay': 60, 'MaxAttempts': 240}  # Up to 4 hours
                       )
                       
                       # Check final status
@@ -476,7 +476,7 @@ Resources:
           artifacts:
             files:
               - training_job_name.txt
-      TimeoutInMinutes: 180
+      TimeoutInMinutes: 300  # 5 hours for longer training
 
   # Build project for model deployment
   ModelDeploymentBuild:
@@ -551,7 +551,7 @@ Resources:
                   if not os.path.exists(job_name_path):
                       print(f"WARNING: {job_name_path} does not exist. Checking alternative locations.")
                       if os.path.exists('training_job_name.txt'):
-                           job_name_path = 'training_job_name.txt'
+                          job_name_path = 'training_job_name.txt'
 
                   print(f"Reading job name from: {job_name_path}")
                   with open(job_name_path, 'r') as f:
@@ -595,9 +595,21 @@ Resources:
                   if os.path.exists('requirements.txt'):
                       shutil.copy('requirements.txt', 'code/requirements.txt')
 
-                  # Update tarball
-                  with tarfile.open('model.tar.gz', 'a:gz') as tar:
-                      tar.add('code', arcname='code')
+                  # Extract original model, add code folder, repack
+                  os.makedirs('model_extract', exist_ok=True)
+                  with tarfile.open('model.tar.gz', 'r:gz') as tar:
+                      tar.extractall('model_extract')
+                  
+                  # Copy code folder into extracted model
+                  shutil.copytree('code', 'model_extract/code', dirs_exist_ok=True)
+                  
+                  # Repack everything
+                  with tarfile.open('model_repacked.tar.gz', 'w:gz') as tar:
+                      for item in os.listdir('model_extract'):
+                          tar.add(os.path.join('model_extract', item), arcname=item)
+                  
+                  # Replace original with repacked
+                  shutil.move('model_repacked.tar.gz', 'model.tar.gz')
                   
                   # Upload repacked model
                   repacked_key = f"repacked-models/{training_job_name}/model.tar.gz"
@@ -962,6 +974,12 @@ Resources:
                   - iam:PassRole
                 Resource:
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-sagemaker-role'
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  - kms:Encrypt
+                Resource: '*'
 
 
   PipelineRole:
