@@ -36,7 +36,7 @@ Parameters:
 
   SageMakerInferenceInstanceType:
     Type: String
-    Default: ml.t2.medium
+    Default: ml.m5.large
     Description: SageMaker inference instance type
 
   ModelTrainingSchedule:
@@ -423,12 +423,12 @@ Resources:
                               'VolumeSizeInGB': 50
                           },
                           StoppingCondition={
-                              'MaxRuntimeInSeconds': 14400  # 4 hours max
+                              'MaxRuntimeInSeconds': 18000  # 5 hours max
                           },
                           HyperParameters={
-                              'epochs': '20',        # More epochs for better personalization
+                              'epochs': '15',        # More epochs for better personalization
                               'batch-size': '4096',  # Larger batch for faster training
-                              'num-negatives': '6',  # More negatives for better discrimination
+                              'num-negatives': '4',  # More negatives for better discrimination
                               'learning-rate': '0.0025',  # Higher LR for faster convergence
                               'gmf-embedding-dim': '64',  # Larger embeddings for more capacity
                               'mlp-embedding-dim': '64',
